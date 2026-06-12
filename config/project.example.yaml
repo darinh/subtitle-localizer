@@ -1,0 +1,80 @@
+# =============================================================================
+# Per-project config TEMPLATE.  Copy to  config/project.yaml  and edit.
+# This file holds everything specific to ONE film or series. The reusable
+# language rules live in config/guardrails/<target>.yaml (do not edit those).
+# =============================================================================
+
+project_name: "Example Show (2025)"     # free text; appears in prompts only
+source_language: en                      # ISO code of the embedded subtitle track
+
+target:
+  guardrails: es-419                     # which pack under config/guardrails/ to load
+  srt_suffix: ".es-419.srt"             # delivered sidecar suffix (next to each video)
+
+paths:
+  media_root: "D:/Media/Example Show"    # root that contains the video files
+  work_dir: "work"                        # intermediates (relative to repo root or absolute)
+
+# ---- Layout: how titles are discovered --------------------------------------
+layout:
+  kind: episodic                          # episodic | movie
+  # episodic: discover videos under media_root and derive a title key from the filename
+  title_regex: 'S(?P<season>\d{2})E(?P<ep>\d{2})'   # must yield a unique key per video
+  video_globs: ["*.mkv", "*.mp4"]
+  # movie: instead of title_regex, list titles explicitly (uncomment for kind: movie)
+  # titles:
+  #   - { key: "the-film-2025", video: "The Film (2025).mkv" }
+
+slices_per_title: 4                       # contiguous range slices per title (parallel workers)
+
+# ---- Subtitle stream selection (extraction preflight) -----------------------
+streams:
+  prefer_language: en                     # match the source_language track
+  prefer_sdh: true                        # SDH track is a goldmine of speaker/foreign-language labels
+  allow_forced: false                     # forced tracks subtitle only foreign lines -> usually NOT wanted
+  exclude_commentary: true
+  # index_override: { "the-film-2025": 3 }  # force a stream index for a specific title if needed
+
+# ---- Register (tú / usted) --------------------------------------------------
+register:
+  default_second_person: "tú"            # tú | usted
+  notes: >
+    Family and close peers = tú. Strangers/officials = usted. An aggressor in a
+    hostile confrontation may use condescending tú even toward a stranger.
+  # Asymmetric / time-varying pairs live in the glossary's relationship matrix,
+  # including explicit switch cues (e.g. captor->victim flips at cue N).
+
+# ---- Units & named entities -------------------------------------------------
+units:
+  road_distance: imperial                 # keep miles for road distance
+  felt_quantities: metric                 # values the audience must *feel* (blast radius) -> meters
+  notes: "Propose unit choices at Gate A; don't re-litigate later."
+
+named_entities_keep_verbatim:             # preserve exactly (cities, brands, codes)
+  - "Minneapolis"
+  - "Modafinil -> Modafinilo"            # drug names adapted only by Spanish spelling
+
+# ---- Readability overrides (else inherits guardrails defaults) --------------
+readability:
+  # max_cps: 17
+  # max_cpl: 42
+
+# ---- Optional advanced features ---------------------------------------------
+features:
+  allow_merge: false                      # opt-in: workers may merge ADJACENT same-speaker cues (N..M|||text)
+  gate_b_sample_lock: true                # mandatory sample-lock for new projects (set false to waive, with reason)
+  burnin_recovery: false                  # opt-in: recover burned-in/hardcoded captions in subtitle gaps
+
+# ---- Project-specific locked renderings (optional) --------------------------
+# Deterministic, high-confidence fixes applied by autofix.py. Each: a match and
+# a replacement. match_type: word (whole word, case-insensitive) | regex.
+# Leave empty for a generic project; populate from your glossary's locked lexicon.
+# NOTE: always SINGLE-QUOTE a regex ('...') in YAML so \b \s \. stay literal — a
+# double-quoted "\b" is parsed by YAML into a backspace char and breaks the pattern.
+catchphrases: []
+# Example:
+# catchphrases:
+#   - { match_type: word,  find: "downtown",  replace: "el centro" }
+#   - { match_type: regex, find: '\bMr\. (?=[A-Z])', replace: "Sr. " }
+
+glossary: "glossary.md"                    # the per-project bible (see templates/glossary.template.md)

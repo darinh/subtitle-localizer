@@ -1,0 +1,30 @@
+# Runtime working dir (per-title intermediates, worker outputs, built SRTs)
+work/
+**/work/
+
+# Per-project config & glossary (user-supplied; may contain spoilers/PII)
+config/project.yaml
+**/glossary.md
+!templates/glossary.template.md
+
+# Delivered subtitle outputs
+*.srt
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# State DB
+*.db
+*.sqlite
+*.sqlite3
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

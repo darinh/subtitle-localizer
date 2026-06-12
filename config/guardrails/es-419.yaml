@@ -1,0 +1,144 @@
+# =============================================================================
+# es-419 (neutral Latin American Spanish) language guardrails
+# Reusable across ALL projects. Project-specific data (cast, dishes, venues,
+# catchphrases) belongs in the per-project glossary, NOT here.
+# Loaded by scripts/config.py; the validator/autofix/prompts read these.
+# Regex fragments are Python-flavored, matched case-insensitively with word
+# boundaries unless noted. Keep them as plain or single-quoted scalars so
+# backslashes stay literal.
+# =============================================================================
+
+target_code: es-419
+target_name: "Español (Latinoamérica)"
+
+# ---- Banned terms: must never appear in neutral es-419 -----------------------
+banned:
+  # Single-word / simple alternatives -> combined into \b(?:...)\b by config.py.
+  # These are UNAMBIGUOUS in es-419 (HARD fail). Ambiguous homographs go in `caution`.
+  terms:
+    # Spain-isms
+    - vosotros
+    - vosotras
+    - gilipollas
+    - capullo
+    - coño
+    - 'jod\w*'           # joder/jodido/jode/... (any jod- form)
+    - ordenador
+    - currar
+    - gambas
+    - 'chupapoll\w*'
+    - coger             # LatAm's #1 trap: "grab/take" in Spain, vulgar in much of LatAm -> use tomar/agarrar
+    - cogiendo
+    # Spain vosotros verb endings (es-419 uses ustedes: hablan/comen/van/son)
+    - '\w+áis'          # habláis, estáis, ... ("país" has aís not áis -> not matched)
+    - '\w+éis'          # coméis, seréis, ...
+    - sois
+    - vais
+    # over-localized Mexican / regional slang
+    - güey
+    - órale
+    - chido
+    - pendejo
+    - cabrón
+    - cabrona
+    - boludo
+    # adverb calques for "fucking X"
+    - malditamente
+    - condenadamente
+    - jodidamente
+  # AMBIGUOUS homographs: soft-flag for the reviewer (NOT a hard block). Each is a real
+  # Spain-ism/slang in one sense but a normal es-419 word in another:
+  #   móvil(Spain phone) vs "el móvil del crimen"/"unidad móvil";  hostia(expletive) vs communion wafer;
+  #   pinche(MX intensifier) vs kitchen assistant;  entrantes(Spain starters) vs "llamadas entrantes";
+  #   concha(Southern-Cone vulgar) vs shell/pastry.
+  caution:
+    - móvil
+    - hostia
+    - pinche
+    - entrantes
+    - concha
+  # Multi-word phrases (matched as phrases, case-insensitive)
+  phrases:
+    - 'puta\s+madre'     # banned even though "hijo/a de puta" as a direct insult is allowed
+    - 'me\s+vale\s+madres'
+    - 'no\s+mames'
+    - 'la\s+regué'
+    - 'caer\s+el\s+veinte'
+  # Homographs that ARE valid in some senses -> validator exempts these contexts.
+  context_exempt:
+    - term: 'tío'
+      sense: family            # uncle (vs Spain "dude"); allowed in family context
+    - term: 'tía'
+      sense: family            # aunt
+    - term: 'vale'
+      sense: valer             # "vale la pena", "más vale" (vs Spain "OK")
+
+
+# ---- Profanity / idiom map: source -> locked neutral es-419 rendering --------
+# Used to brief workers and to focus the adversarial reviewer. Not auto-applied
+# (except items also covered by autofix); the reviewer hunts these by name.
+profanity_map:
+  - { src: "fuck me",             tgt: "¡me lleva el carajo!",           note: "NEVER 'puta madre'" }
+  - { src: "fucking hell",         tgt: "¡maldita sea!",                  note: "not 'me lleva el carajo'" }
+  - { src: "holy shit (awe)",      tgt: "¡increíble! / ¡por Dios! / ¡cielos!", note: "POSITIVE awe -> keep positive; ¡mierda! only as a surprise exclamation, never pejorative" }
+  - { src: "shit",                 tgt: "mierda",                         note: "not porquerías/caca/cosas" }
+  - { src: "bullshit",             tgt: "estupideces / mentiras",         note: "not 'mierda'" }
+  - { src: "bitch (insult)",       tgt: "imbécil / perra / hija de puta",  note: "not bare 'cobarde'" }
+  - { src: "fucker",               tgt: "desgraciado / imbécil / hijo de puta", note: "NEVER 'cabrón' (banned)" }
+  - { src: "fuck up / screw up",   tgt: "cagarla / cagar",                note: "not 'arruinar/echar a perder'" }
+  - { src: "piss off",             tgt: "vete / váyanse al carajo",       note: "" }
+  - { src: "pissed",               tgt: "furioso / enojado",              note: "" }
+  - { src: "positive 'fucking X'", tgt: "X del carajo / increíble X (maldito X only for admiring emphasis)", note: "POSITIVE intensifier; NEVER 'de mierda' (inversion); lead with 'del carajo'/'increíble'" }
+  - { src: "the fuck / fucking",   tgt: "carajo / maldito",               note: "intensifier; NEVER drop it" }
+
+# ---- Deterministic autofix (config-driven safe rewrites; convenience nets) ---
+# Applied by autofix.py BEFORE the build. High-confidence only; the validator is
+# still the gate. type: word (whole-word, case-insensitive) | regex.
+autofix:
+  - { type: word,  find: "cabrón",    replace: "desgraciado" } # banned hyper-local -> neutral net
+  - { type: word,  find: "cabrona",   replace: "desgraciada" }
+
+# ---- Profanity intensity policy ---------------------------------------------
+profanity:
+  intensity: match-source        # match the (uncensored) source; never escalate or soften
+  keep_compound_insults: true    # "fat fuck" -> keep both parts ("gordo de mierda")
+  prefer_sarcasm_over_calque: true  # "big fucking deal" -> "vaya gran cosa"
+
+# ---- Leftover source-language detector (high precision; avoid Spanish FPs) ---
+# Words that essentially never occur in es-419 text and are not kept loanwords.
+leftover_source_markers:
+  [the, you, your, "you're", what, with, this, that, they, here, there,
+   because, everything, nothing, right, going, gonna, yeah, please, sorry,
+   fuck, fucking, fucked, shit, bitch, asshole, okay, ok]
+kept_loanwords: [chef]   # intentionally kept in source language; never flagged
+
+# ---- SDH (subtitles for the deaf/hard-of-hearing) policy --------------------
+sdh:
+  drop_pure_sound: true                 # "[music playing]"/"[applause]" -> <DROP>
+  inaudible_render: "[ininteligible]"   # "[inaudible]"/"[indistinct]" -> kept, flagged, NEVER dropped
+  strip_speaker_labels: true            # "NAME:" prefixes removed from display, kept for attribution
+  sound_words: [music, cheer, cheering, applause, applauding, laugh, laughs, laughing,
+                laughter, buzzer, buzzing, grunt, grunting, groan, groaning, sigh, sighs,
+                gasp, gasps, screaming, scream, yelling, indistinct, chatter, sizzling,
+                clattering, beep, bleep, whoosh]
+
+# ---- Foreign (non-source, non-target) in-film speech ------------------------
+foreign_speech:
+  policy: translate-and-italicize       # default: translate into es-419 and wrap <i>...</i>
+  keep_in_language_italic: [Italian, French]   # "Grazie"/"Bon appétit" stay in-language + <i>
+  never_italicize_target: true          # never italicize ordinary Spanish (greetings included)
+
+# ---- Readability defaults (override per-project in project.yaml) ------------
+readability:
+  max_cps: 17           # target chars/sec
+  hard_cps: 26          # soft-flag threshold; most overflow is inherited from short source cues
+  max_cpl: 42           # chars per line (soft after auto-wrap)
+  max_lines: 2          # hard
+  min_duration: 0.7     # seconds; below this the source timestamp is suspect (soft)
+  min_gap: 0.0          # seconds between cues (0 = don't enforce)
+
+# ---- Encoding (hard) ---------------------------------------------------------
+encoding:
+  utf8_no_bom: true
+  forbid_literal_newline_escapes: true  # literal "\n" or PowerShell backtick-n must be a real break
+  forbid_mojibake: true
