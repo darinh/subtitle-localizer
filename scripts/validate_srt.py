@@ -55,6 +55,11 @@ def _tagcount(s):
     return tuple(sorted(t.lower() for t in TAG.findall(s)))
 
 
+def _contains_named_entity(text, entity):
+    text = re.sub(r"\s+", " ", text)
+    return bool(re.search(r"\b" + re.escape(entity) + r"\b", text, re.I))
+
+
 def validate(key, verbose=True, standalone=False):
     srt_path = WORK / f"{key}{CFG.srt_suffix}"
     src_path = WORK / f"{key}.src.json"
@@ -228,7 +233,7 @@ def validate(key, verbose=True, standalone=False):
                     s_tok, _, t_tok = (x.strip() for x in str(ent).partition("->"))
                     want = t_tok or s_tok
                     if re.search(r"\b" + re.escape(s_tok) + r"\b", src_text, re.I) \
-                            and not re.search(r"\b" + re.escape(want) + r"\b", o, re.I):
+                            and not _contains_named_entity(o, want):
                         soft.append(f"cue {mc['out']}: named entity '{want}' expected (from '{s_tok}') but absent")
             if verbose:
                 print(f"   source={len(src)} output={len(cues)} dropped={len(dropped_nums)}")

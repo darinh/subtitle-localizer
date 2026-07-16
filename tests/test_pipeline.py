@@ -263,6 +263,8 @@ check("17-21 CPS target band reported",
       _cps_hard == 0
       and f"CPS {validate_srt.cps('á' * 36, by[6]['ts']):.0f} > target 17"
       in _cps_out.getvalue())
+check("named entity survives display-line wrap",
+      validate_srt._contains_named_entity("Premio\nMeikou", "Premio Meikou"))
 # banned term
 write_batches("T01", {**GOOD, 6: "No me jodas."}, parts=4)
 normalize_batch.normalize("T01"); build_srt.build("T01")
