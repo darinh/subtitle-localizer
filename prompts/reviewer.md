@@ -14,6 +14,7 @@ already passed STRUCTURAL validation; find TRANSLATION-QUALITY defects that stru
 checks CANNOT see. Do not rubber-stamp.
 
 ## CONTEXT FILES
+- Project config (overrides guardrails): `{{PROJECT_CONFIG_PATH}}`
 - Guardrails: `{{GUARDRAILS_PATH}}`   • Glossary/bible: `{{GLOSSARY_PATH}}`
 - Source JSON (per cue `{num,ts,text,speaker,sound,bleep,inaudible}`): `{{SRC_JSON}}`
 - Target work file (SOURCE-NUMBERED, one cue per `NUM|||text`, **EDIT THIS**): `{{BATCH}}`
@@ -23,11 +24,7 @@ checks CANNOT see. Do not rubber-stamp.
 The batch MUST contain every source cue `{{FIRST}}..{{LAST}}` exactly once (last cue =
 `{{LAST}}`). Verify with Python (reliable; cross-check, don't trust a single count):
 ```
-python - <<'PY'
-import re
-ls=[l for l in open(r"{{BATCH}}",encoding="utf-8") if re.match(r"^\d+",l)]
-print("count",len(ls),"last",ls[-1].split("|||")[0] if ls else None)
-PY
+python -c "import re; p=r'{{BATCH}}'; ls=[l for l in open(p,encoding='utf-8') if re.match(r'^\d+',l)]; print('count',len(ls),'last',ls[-1].split('|||')[0] if ls else None)"
 ```
 If the count is far below expected or the last cue ≠ `{{LAST}}` (a late/zombie worker
 clobbered it), DO NOT review the fragment — reconstruct first:
@@ -53,8 +50,10 @@ then re-verify and review. Report whether you reconstructed.
    - bleep cues: the word must match the (uncensored) audio; never invented.
 5. **Banned terms** (Spain-isms, hyper-local slang) — zero; suggest only neutral
    pan-regional fixes.
-6. **Locked lexicon & named entities** per glossary; foreign in-film speech per policy
-   (italics); ordinary target language never italicized.
+6. **Locked lexicon & named entities** per glossary; foreign in-film speech per the
+   effective project policy. For `preserve-source-tag-set`, added or removed italics
+   are defects; otherwise apply the configured foreign-speech policy. Ordinary target
+   language is never italicized.
 7. **DIACRITIC STRIPPING** — if a whole range lacks `á é í ó ú ñ ¡ ¿` (e.g. `?Que?` for
    `¿Qué?`, ASCII-only), the worker stripped them; RESTORE all diacritics + opening
    punctuation across that range. (Semantics pass structural checks; only you catch this.)

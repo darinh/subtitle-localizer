@@ -16,13 +16,15 @@ You are a professional subtitle localizer translating part of **{{PROJECT}}** fr
 register) — not strings.
 
 ## STEP 1 — READ THESE FILES VERBATIM BEFORE TRANSLATING
-1. Language guardrails (banned terms, profanity map, SDH policy, readability, foreign
+1. Project config (effective target locale and title-specific policy overrides):
+   `{{PROJECT_CONFIG_PATH}}`. Project policy overrides the reusable guardrails.
+2. Language guardrails (banned terms, profanity map, SDH policy, readability, foreign
    speech): `{{GUARDRAILS_PATH}}`
-2. Project glossary / character bible (characters + genders, register matrix WITH
+3. Project glossary / character bible (characters + genders, register matrix WITH
    addressee pairs and switch cues, locked lexicon, named entities, units):
    `{{GLOSSARY_PATH}}`
-3. Your source slice (the exact cues to translate; each cue is
-   `{num, ts, text[], speaker, sound, bleep, inaudible}`): `{{SLICE_PATH}}`
+4. Your source slice (the exact cues to translate; each cue is
+   `{num, ts, text[], speaker,sound,bleep,inaudible}`): `{{SLICE_PATH}}`
 
 ## STEP 2 — WRITE YOUR TRANSLATION to `{{OUT_PATH}}` (UTF-8, NO BOM, real LF newlines)
 Write NOTHING else to disk. ONE file only. Do not run any build/validate scripts.
@@ -67,9 +69,11 @@ Write NOTHING else to disk. ONE file only. Do not run any build/validate scripts
 - **Reading speed:** condense to fit a per-cue budget of about `(end−start) × max_cps`
   characters (see guardrails `readability`); ≤ `max_lines` lines, each ≤ ~`max_cpl`
   chars. Condense; never pad. Most tight cues are inherited from short source durations.
-- **Foreign in-film speech** (a third language) per the guardrails `foreign_speech`
-  policy (translate + italics, or keep in-language + italics for the listed languages).
-  NEVER italicize ordinary {{TARGET_NAME}}.
+- **Foreign in-film speech** follows the effective project `foreign_speech` policy,
+  merged over the reusable guardrails. If it says `preserve-source-tag-set`, NEVER add
+  or remove italics: carry exactly the source cue's formatting tags. Otherwise apply
+  the configured translate/keep-and-italicize policy. NEVER italicize ordinary
+  {{TARGET_NAME}}.
 - **Keep all target-language diacritics and opening punctuation** (á é í ó ú ñ ¡ ¿).
   Do not emit ASCII-stripped text.
 

@@ -90,6 +90,7 @@ def validate(key, verbose=True, standalone=False):
 
     max_lines = int(CFG.readability.get("max_lines", 2))
     max_cpl = int(CFG.readability.get("max_cpl", 42))
+    max_cps = float(CFG.readability.get("max_cps", 17))
     hard_cps = float(CFG.readability.get("hard_cps", 26))
     min_dur = float(CFG.readability.get("min_duration", 0.7))
 
@@ -112,8 +113,13 @@ def validate(key, verbose=True, standalone=False):
         for l in body:
             if len(l) > max_cpl + 3:
                 soft.append(f"cue {c['num']}: line >{max_cpl+3} chars ({len(l)})")
-        if cps(plain, c["ts"]) > hard_cps:
-            soft.append(f"cue {c['num']}: CPS {cps(plain, c['ts']):.0f} (compare to source)")
+        cue_cps = cps(plain, c["ts"])
+        if cue_cps > hard_cps:
+            soft.append(f"cue {c['num']}: CPS {cue_cps:.0f} > {hard_cps:g} "
+                        "(mandatory review; compare to source)")
+        elif cue_cps > max_cps:
+            soft.append(f"cue {c['num']}: CPS {cue_cps:.0f} > target {max_cps:g} "
+                        "(review; compare to source)")
         # banned (always)
         if CFG.banned_regex:
             mm = CFG.banned_regex.search(plain)

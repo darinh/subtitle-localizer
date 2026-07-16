@@ -56,8 +56,8 @@ class Config:
         if not gpath.exists():
             raise SystemExit(f"guardrails pack not found: {gpath}")
         self.guardrails = _read_yaml(gpath)
-        self.target_code = self.guardrails.get("target_code", gname)
-        self.target_name = self.guardrails.get("target_name", gname)
+        self.target_code = tgt.get("code", self.guardrails.get("target_code", gname))
+        self.target_name = tgt.get("name", self.guardrails.get("target_name", gname))
         self.srt_suffix = tgt.get("srt_suffix", f".{self.target_code}.srt")
 
         paths = project.get("paths", {}) or {}
@@ -84,7 +84,9 @@ class Config:
         self.sdh = self.guardrails.get("sdh", {}) or {}
         self.sound_words = set(w.lower() for w in self.sdh.get("sound_words", []))
         self.profanity_map = self.guardrails.get("profanity_map", []) or []
-        self.foreign_speech = self.guardrails.get("foreign_speech", {}) or {}
+        self.foreign_speech = _deep_merge(
+            self.guardrails.get("foreign_speech", {}) or {},
+            project.get("foreign_speech", {}) or {})
         self.encoding = self.guardrails.get("encoding", {}) or {}
         self.kept_loanwords = [w.lower() for w in self.guardrails.get("kept_loanwords", [])]
 
@@ -172,6 +174,7 @@ if __name__ == "__main__":
     print(f"layout        : {cfg.layout.get('kind')}  slices/title={cfg.slices_per_title}")
     print(f"work dir      : {cfg.work}")
     print(f"readability   : {cfg.readability}")
+    print(f"foreign speech: {cfg.foreign_speech}")
     print(f"banned compiled: {'yes' if cfg.banned_regex else 'no'}; "
           f"context-exempt {len(cfg.context_exempt)}; "
           f"leftover markers {'yes' if cfg.leftover_regex else 'no'}")

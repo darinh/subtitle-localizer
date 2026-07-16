@@ -9,6 +9,8 @@ source_language: en                      # ISO code of the embedded subtitle tra
 
 target:
   guardrails: es-419                     # which pack under config/guardrails/ to load
+  # code: es-MX                          # optional project variant override
+  # name: "Español (México)"             # optional display-name override
   srt_suffix: ".es-419.srt"             # delivered sidecar suffix (next to each video)
 
 paths:
@@ -64,6 +66,11 @@ features:
   allow_merge: false                      # opt-in: workers may merge ADJACENT same-speaker cues (N..M|||text)
   gate_b_sample_lock: true                # mandatory sample-lock for new projects (set false to waive, with reason)
   burnin_recovery: false                  # opt-in: recover burned-in/hardcoded captions in subtitle gaps
+
+# Optional project override merged over the reusable guardrails policy.
+# Use this when the source tag set or this title's language structure requires it.
+# foreign_speech:
+#   policy: preserve-source-tag-set
 
 # ---- Project-specific locked renderings (optional) --------------------------
 # Deterministic, high-confidence fixes applied by autofix.py. Each: a match and

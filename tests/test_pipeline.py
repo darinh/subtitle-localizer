@@ -6,10 +6,12 @@ work dir, points SUBLOC_CONFIG at it, then exercises the pipeline on synthetic d
 """
 import os
 import sys
+import io
 import json
 import shutil
 import tempfile
 import traceback
+from contextlib import redirect_stdout
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -24,7 +26,11 @@ MEDIA.mkdir(parents=True)
 CFG_YAML = f"""
 project_name: "Test"
 source_language: en
-target: {{ guardrails: es-419, srt_suffix: ".es-419.srt" }}
+target:
+  guardrails: es-419
+  code: es-MX
+  name: "Español (México)"
+  srt_suffix: ".es-419.srt"
 paths: {{ media_root: "{MEDIA.as_posix()}", work_dir: "{WORK.as_posix()}" }}
 layout:
   kind: movie
@@ -34,6 +40,7 @@ layout:
     - {{ key: "DUP", video: "DUP.mkv" }}
 slices_per_title: 4
 features: {{ allow_merge: true }}
+foreign_speech: {{ policy: preserve-source-tag-set }}
 catchphrases:
   - {{ type: word, find: "downtown", replace: "el centro" }}
 """
@@ -79,6 +86,15 @@ def expect_raises(name, fn):
     except Exception as e:  # noqa
         PASS += 1
         print(f"  ok   {name} (raised {type(e).__name__})")
+
+
+print("[0] project overrides")
+_cfg = config.load()
+check("target code override", _cfg.target_code == "es-MX")
+check("target name override", _cfg.target_name == "Español (México)")
+check("foreign-speech override merged",
+      _cfg.foreign_speech.get("policy") == "preserve-source-tag-set"
+      and _cfg.foreign_speech.get("never_italicize_target") is True)
 
 
 SRC_SRT = """1
@@ -237,6 +253,16 @@ expect_raises("blank line inside a cue rejected", lambda: build_srt.build("T01")
 print("[7] validate_srt")
 write_batches("T01", GOOD, parts=4); normalize_batch.normalize("T01"); build_srt.build("T01")
 check("clean target validates with 0 HARD", validate_srt.validate("T01", verbose=False) == 0)
+# target-CPS band must be reported even below the high-density threshold
+write_batches("T01", {**GOOD, 6: "á" * 36}, parts=4)
+normalize_batch.normalize("T01"); build_srt.build("T01")
+_cps_out = io.StringIO()
+with redirect_stdout(_cps_out):
+    _cps_hard = validate_srt.validate("T01", verbose=True)
+check("17-21 CPS target band reported",
+      _cps_hard == 0
+      and f"CPS {validate_srt.cps('á' * 36, by[6]['ts']):.0f} > target 17"
+      in _cps_out.getvalue())
 # banned term
 write_batches("T01", {**GOOD, 6: "No me jodas."}, parts=4)
 normalize_batch.normalize("T01"); build_srt.build("T01")
