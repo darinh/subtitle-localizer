@@ -75,7 +75,7 @@ def qa(path, top=15, verbose=True):
             break
 
     cps_vals, cpl_vals, durs = [], [], []
-    prev_end, prev_plain = None, None
+    prev_end, prev_start, prev_plain = None, None, None
     n_over_target = n_over_hard = n_long_line = n_many_lines = n_short = n_overlap = 0
     gaps = []
     for c in cues:
@@ -83,20 +83,21 @@ def qa(path, top=15, verbose=True):
         if en <= st:
             hard.append(f"cue {c['num']}: end <= start ({c['ts']})")
             continue
+        if prev_start is not None and st < prev_start - 1e-6:
+            hard.append(f"cue {c['num']}: starts before the previous cue "
+                        f"(non-monotonic: {st:.3f}s after {prev_start:.3f}s)")
+        prev_start = st
         if prev_end is not None and st < prev_end - 1e-6:
             n_overlap += 1
-            if n_overlap <= top:
-                soft.append(f"cue {c['num']}: overlaps previous by {prev_end-st:.2f}s")
+            soft.append(f"cue {c['num']}: overlaps previous by {prev_end-st:.2f}s")
         if prev_end is not None and st - prev_end > 120:
             gaps.append((c["num"], st - prev_end))
         prev_end = en
         dur = en - st
         durs.append(dur)
-        if dur < min_dur:
+        if srt_utils.ms(en) - srt_utils.ms(st) < srt_utils.ms(min_dur):
             n_short += 1
-            if n_short <= top:
-                soft.append(f"cue {c['num']}: duration {dur:.2f}s < {min_dur}s")
-
+            soft.append(f"cue {c['num']}: duration {dur:.2f}s < {min_dur}s")
         plain = _plain(c)
         if not plain:
             hard.append(f"cue {c['num']}: empty text")
@@ -106,22 +107,20 @@ def qa(path, top=15, verbose=True):
         body = [re.sub(r"</?[ib]>", "", l) for l in c["text"] if l.strip()]
         if len(body) > max_lines:
             n_many_lines += 1
-            if n_many_lines <= top:
-                soft.append(f"cue {c['num']}: {len(body)} lines > {max_lines}")
+            soft.append(f"cue {c['num']}: {len(body)} lines > {max_lines}")
         for l in body:
             cpl_vals.append(len(l))
             if len(l) > max_cpl:
                 n_long_line += 1
-                if n_long_line <= top:
-                    soft.append(f"cue {c['num']}: line {len(l)} chars > {max_cpl}")
+                soft.append(f"cue {c['num']}: line {len(l)} chars > {max_cpl}")
         cv = len(plain.replace(" ", "")) / max(dur, 0.001)
         cps_vals.append(cv)
         if cv > hard_cps:
             n_over_hard += 1
-            if n_over_hard <= top:
-                soft.append(f"cue {c['num']}: CPS {cv:.0f} > hard {hard_cps:g}")
+            soft.append(f"cue {c['num']}: CPS {cv:.0f} > hard {hard_cps:g}")
         elif cv > max_cps:
             n_over_target += 1
+            soft.append(f"cue {c['num']}: CPS {cv:.0f} > target {max_cps:g}")
 
         norm = re.sub(r"[\W_]+", " ", plain.lower()).strip()
         if prev_plain is not None and norm and norm == prev_plain:
@@ -179,14 +178,16 @@ def _report(path, stats, hard, soft, top):
 
 
 if __name__ == "__main__":
-    argv = sys.argv[1:]
-    top = int(argv[argv.index("--top") + 1]) if "--top" in argv else 15
-    skip = {argv[argv.index("--top") + 1]} if "--top" in argv else set()
-    args = [a for a in argv if not a.startswith("--") and a not in skip]
-    if not args:
-        raise SystemExit(__doc__)
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="Structural + readability QA for any SRT, judged on its own terms.")
+    ap.add_argument("paths", nargs="+", help="SRT file(s) to inspect")
+    ap.add_argument("--top", type=int, default=15,
+                    help="how many example findings to print per class")
+    a = ap.parse_args()
     total_hard = 0
-    for p in args:
-        h, _ = qa(p, top=top)
+    for p in a.paths:
+        h, _ = qa(p, top=a.top)
         total_hard += h
     sys.exit(0 if total_hard == 0 else 1)

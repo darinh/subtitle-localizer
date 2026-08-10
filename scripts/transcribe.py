@@ -46,6 +46,7 @@ GAP_SPLIT = 0.65          # a silence this long is a natural cue boundary
 MAX_CUE_SECONDS = 7.0
 LEAD_IN = 0.08            # nudge cue start earlier; ASR word starts run late
 TAIL = 0.35               # let a cue linger past the last word if silence allows
+LOOP_GAP = 0.45           # repetition beyond this silence is real dialogue, not a loop
 # even out whispered vs shouted delivery so quiet dialogue survives the encode
 DYNAUDNORM = "dynaudnorm=f=150:g=15"
 SILENT_DBFS = -50.0       # below this mean level a rendered channel carries no dialogue
@@ -172,8 +173,12 @@ def _clean_word(w):
 def _collapse_loops(words):
     """Drop ASR repetition loops: the same token repeated far past natural usage.
 
-    A real line can repeat a word twice ("no, no"); whisper loops emit the same
-    token 5+ times, or the same short phrase over and over. Keep the first two.
+    Repetition is only a loop when it is TEMPORALLY CONTIGUOUS. A character can
+    shout the same word again a scene later, and that is real dialogue; a decoder
+    loop emits the same token back-to-back with no silence between. So every
+    comparison below is gated on the words being within LOOP_GAP of each other,
+    and a silence resets the run. A real line can repeat a word twice ("no, no"),
+    so only runs longer than four are trimmed, and then back to two.
     """
     out, run = [], []
 
@@ -184,7 +189,8 @@ def _collapse_loops(words):
 
     for w in words:
         tok = re.sub(r"[\W_]+", "", w["word"].lower())
-        if run and tok and tok == re.sub(r"[\W_]+", "", run[-1]["word"].lower()):
+        if run and tok and tok == re.sub(r"[\W_]+", "", run[-1]["word"].lower()) \
+                and (w["start"] - run[-1]["end"]) <= LOOP_GAP:
             run.append(w)
             continue
         flush()
@@ -192,18 +198,22 @@ def _collapse_loops(words):
     flush()
 
     # phrase-level loop: identical consecutive n-grams (n=2..4) repeated 3+ times
+    # back-to-back. The same gate applies: a gap between repetitions means the
+    # actor said it again, not that the decoder stuttered.
+    def _toks(ws):
+        return [re.sub(r"[\W_]+", "", x["word"].lower()) for x in ws]
+
     for n in (4, 3, 2):
         i, res = 0, []
         while i < len(out):
-            gram = [re.sub(r"[\W_]+", "", x["word"].lower()) for x in out[i:i + n]]
+            gram = _toks(out[i:i + n])
             if len(gram) == n and any(gram):
-                reps = 1
-                j = i + n
-                while j + n <= len(out) and [
-                        re.sub(r"[\W_]+", "", x["word"].lower()) for x in out[j:j + n]] == gram:
+                reps, j = 1, i + n
+                while j + n <= len(out) and _toks(out[j:j + n]) == gram \
+                        and (out[j]["start"] - out[j - 1]["end"]) <= LOOP_GAP:
                     reps += 1
                     j += n
-                if reps >= 3:
+                if reps >= 4:
                     res.extend(out[i:i + n * 2])       # keep two repetitions
                     i = j
                     continue
@@ -214,47 +224,71 @@ def _collapse_loops(words):
 
 
 def _split_words(words, max_chars):
-    """Group word dicts into cue-sized chunks under the readability budget."""
+    """Group word dicts into cue-sized chunks under the readability budget.
+
+    A single pass that hard-breaks the instant the budget is hit guarantees the
+    budget but chops mid-clause. So when the budget forces a break, look BACK over
+    the words already accumulated for the last clause boundary and break there
+    instead, carrying the remainder into the next cue. The budget stays a hard
+    guarantee; the break just lands where a reader expects one.
+    """
     cues, cur = [], []
 
-    def cur_len():
-        return len(" ".join(_clean_word(w["word"]) for w in cur).strip())
+    def text_of(ws):
+        return " ".join(_clean_word(w["word"]) for w in ws).strip()
 
-    for i, w in enumerate(words):
+    def flush_at_clause():
+        """Emit cur, breaking at its last useful clause boundary; return the rest."""
+        if len(cur) > 2:
+            for i in range(len(cur) - 1, 0, -1):
+                head = text_of(cur[:i])
+                if CLAUSE_END.search(head) and len(head) >= max_chars * 0.35:
+                    cues.append(cur[:i])
+                    return cur[i:]
+        cues.append(list(cur))
+        return []
+
+    for w in words:
         prev = cur[-1] if cur else None
         gap = (w["start"] - prev["end"]) if prev else 0.0
         span = (w["end"] - cur[0]["start"]) if cur else 0.0
         nxt = len(_clean_word(w["word"])) + (1 if cur else 0)
-        if cur and (cur_len() + nxt > max_chars or gap >= GAP_SPLIT or span > MAX_CUE_SECONDS):
-            cues.append(cur)
+        if cur and len(text_of(cur)) + nxt > max_chars:
+            cur = flush_at_clause()
+        elif cur and (gap >= GAP_SPLIT or span > MAX_CUE_SECONDS):
+            cues.append(list(cur))
             cur = []
         cur.append(w)
-        txt = " ".join(_clean_word(x["word"]) for x in cur).strip()
+        txt = text_of(cur)
         # prefer to break at a sentence end once the cue has real substance
         if SENT_END.search(txt) and len(txt) >= max_chars * 0.45:
-            cues.append(cur)
+            cues.append(list(cur))
             cur = []
     if cur:
-        cues.append(cur)
+        cues.append(list(cur))
 
-    # second pass: a cue still over budget is split at its best clause boundary
+    # safety net: a clause remainder carried forward can itself exceed the budget,
+    # so keep splitting any surviving over-budget group until every cue fits.
     final = []
     for c in cues:
-        txt = " ".join(_clean_word(w["word"]) for w in c).strip()
-        if len(txt) <= max_chars or len(c) < 2:
-            final.append(c)
-            continue
-        best, bi = None, None
-        for i in range(1, len(c)):
-            head = " ".join(_clean_word(w["word"]) for w in c[:i]).strip()
-            if len(head) > max_chars:
-                break
-            score = (2 if CLAUSE_END.search(head) else 0) + (1 if len(head) >= max_chars * 0.4 else 0)
-            if best is None or score >= best:
-                best, bi = score, i
-        bi = bi or max(1, len(c) // 2)
-        final.append(c[:bi])
-        final.append(c[bi:])
+        queue = [c]
+        while queue:
+            g = queue.pop(0)
+            if len(text_of(g)) <= max_chars or len(g) < 2:
+                final.append(g)
+                continue
+            best, bi = None, None
+            for i in range(1, len(g)):
+                head = text_of(g[:i])
+                if len(head) > max_chars:
+                    break
+                score = (2 if CLAUSE_END.search(head) else 0) + \
+                        (1 if len(head) >= max_chars * 0.4 else 0)
+                if best is None or score >= best:
+                    best, bi = score, i
+            bi = bi or max(1, len(g) // 2)
+            final.append(g[:bi])
+            queue.insert(0, g[bi:])
     return [c for c in final if c]
 
 
@@ -281,11 +315,132 @@ def build_cues(words, cfg_read):
         prev_end = cues[i - 1]["end"] if i else 0.0
         c["start"] = max(prev_end + 0.001, c["start"] - LEAD_IN, 0.0)
         room = max(nxt - 0.04, c["start"] + 0.05)
-        c["end"] = min(max(c["end"] + TAIL, c["start"] + min_dur), room)
+        floor = (srt_utils.ms(c["start"]) + srt_utils.ms(min_dur)) / 1000.0
+        c["end"] = min(max(c["end"] + TAIL, floor), room)
         need = len(c["text"].replace(" ", "")) / max_cps          # seconds for target CPS
         if (c["end"] - c["start"]) < need:
             c["end"] = min(c["start"] + need, room)
     return [c for c in cues if c["end"] > c["start"]]
+
+
+def _load_model(model_name, device):
+    _add_cuda_dll_dirs()
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        raise SystemExit("FAIL: faster-whisper is not installed.  pip install faster-whisper")
+    if device == "auto":
+        device = "cuda"
+    compute = "float16" if device == "cuda" else "int8"
+    try:
+        return WhisperModel(model_name, device=device, compute_type=compute), device, compute
+    except Exception as e:                                # noqa: BLE001 - fall back loudly
+        if device != "cuda":
+            raise
+        print(f"   WARN cuda unavailable ({type(e).__name__}: {e}); falling back to CPU int8")
+        return WhisperModel(model_name, device="cpu", compute_type="int8"), "cpu", "int8"
+
+
+DECODE = dict(task="transcribe", beam_size=5, best_of=5,
+              temperature=[0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+              condition_on_previous_text=False, word_timestamps=True,
+              no_speech_threshold=0.6, log_prob_threshold=-1.0,
+              compression_ratio_threshold=2.4)
+
+
+def fill_gaps(key, reference, model_name=DEFAULT_MODEL, device="auto", audio=None,
+              tolerance=3.0, pad=2.0):
+    """Re-transcribe only the stretches a REFERENCE track says carry dialogue but
+    our draft has nothing near, and merge in whatever that finds.
+
+    Whisper decodes long audio in 30-second windows; a window dominated by score,
+    screaming or overlapping speech can lose a segment that the very same model
+    recovers when handed just that stretch. A professionally cued track for the
+    same title is an excellent map of WHERE those losses are.
+
+    The reference is used ONLY for cue TIMING - where dialogue exists. None of its
+    text is read, compared or copied; every word merged in is transcribed from the
+    title's own audio, so the draft stays an original transcript.
+    """
+    draft_path = WORK / f"{key}.src.srt"
+    if not draft_path.exists():
+        raise SystemExit(f"FAIL: no draft at {draft_path} — run transcribe first")
+    wav = audio or (WORK / f"{key}.asr.wav")
+    if not os.path.exists(str(wav)):
+        raise SystemExit(f"FAIL: no audio at {wav} — keep the .asr.wav or pass --audio")
+
+    draft, _ = srt_utils.parse_srt(draft_path.read_text(encoding="utf-8"), strict=True)
+    have = sorted(srt_utils.cue_bounds(c["ts"]) for c in draft)
+    ref_cues, _ = srt_utils.parse_srt(
+        open(reference, encoding="utf-8-sig", errors="replace").read(), strict=False)
+    ref = sorted(srt_utils.cue_bounds(c["ts"]) for c in ref_cues)
+    if not ref:
+        raise SystemExit(f"FAIL: no cues parsed from reference {reference}")
+
+    missing = [(a, b) for a, b in ref
+               if not any(not (y <= a - tolerance or x >= b + tolerance) for x, y in have)]
+    windows = []
+    for a, b in missing:
+        if windows and a - windows[-1][1] < 6.0:
+            windows[-1][1] = max(windows[-1][1], b)
+        else:
+            windows.append([a, b])
+    windows = [(max(0.0, a - pad), b + pad) for a, b in windows]
+    print(f"{key}: reference says {len(missing)} cue(s) have no nearby draft cue "
+          f"-> {len(windows)} window(s) to re-scan")
+    if not windows:
+        return draft_path
+
+    model, device, compute = _load_model(model_name, device)
+    lang = (CFG.source_language or "en").lower()
+    max_cpl = int(CFG.readability.get("max_cpl", 42))
+    clip = WORK / f"{key}._gap.wav"
+    added, scanned = [], 0
+    for (a, b) in windows:
+        r = _run(["ffmpeg", "-y", "-loglevel", "error", "-ss", f"{a:.3f}",
+                  "-t", f"{max(b - a, 1.0):.3f}", "-i", str(wav),
+                  "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", str(clip)])
+        if r.returncode != 0 or not clip.exists():
+            continue
+        scanned += 1
+        segs, _info = model.transcribe(str(clip), language=lang, vad_filter=False, **DECODE)
+        words = []
+        for s in segs:
+            for w in (s.words or []):
+                if w.word is None or w.start is None or w.end is None:
+                    continue
+                words.append({"word": w.word, "start": float(w.start) + a,
+                              "end": float(w.end) + a})
+        for c in build_cues(words, CFG.readability):
+            # only keep what genuinely fills a hole in the draft
+            if any(not (y <= c["start"] or x >= c["end"]) for x, y in have):
+                continue
+            added.append(c)
+    if clip.exists():
+        clip.unlink()
+    if not added:
+        print(f"   re-scanned {scanned} window(s); nothing new recovered")
+        return draft_path
+
+    rows = [{"start": s, "end": e, "text": "\n".join(c["text"])}
+            for c, (s, e) in zip(draft, have)]
+    rows += [{"start": c["start"], "end": c["end"], "text": c["text"]} for c in added]
+    rows.sort(key=lambda x: (x["start"], x["end"]))
+    for i, it in enumerate(rows):           # keep the merged track non-overlapping
+        if i and it["start"] < rows[i - 1]["end"]:
+            it["start"] = rows[i - 1]["end"] + 0.001
+        if it["end"] <= it["start"]:
+            it["end"] = it["start"] + 0.05
+    out = [(i, srt_utils.format_span(it["start"], it["end"]),
+            srt_utils.wrap_cue(it["text"], width=max_cpl))
+           for i, it in enumerate(rows, 1)]
+    srt_utils.write_srt(out, draft_path)
+    reparsed, _ = srt_utils.parse_srt(draft_path.read_text(encoding="utf-8"), strict=True)
+    if len(reparsed) != len(out):
+        raise SystemExit(f"FAIL: merged draft did not re-parse ({len(reparsed)} vs {len(out)})")
+    print(f"{key}: recovered {len(added)} cue(s) from {scanned} window(s) "
+          f"-> {len(draft)} + {len(added)} = {len(out)} cues")
+    return draft_path
 
 
 def transcribe(key, model_name=DEFAULT_MODEL, device="auto", audio=None,
@@ -295,6 +450,7 @@ def transcribe(key, model_name=DEFAULT_MODEL, device="auto", audio=None,
         if not video or not video.exists():
             raise SystemExit(f"FAIL: no video found for {key} (check media_root / layout).")
     lang = (language or CFG.source_language or "en").lower()
+    WORK.mkdir(parents=True, exist_ok=True)   # --audio skips extract_audio's mkdir
     wav = audio or extract_audio(video, key, lang, astream, center=center)
 
     _add_cuda_dll_dirs()
@@ -374,35 +530,34 @@ def transcribe(key, model_name=DEFAULT_MODEL, device="auto", audio=None,
 
 
 def _fmt_ts(a, b):
-    def one(t):
-        t = max(t, 0.0)
-        h = int(t // 3600)
-        m = int((t % 3600) // 60)
-        s = int(t % 60)
-        ms = int(round((t - int(t)) * 1000))
-        if ms == 1000:
-            ms, s = 0, s + 1
-        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-    return f"{one(a)} --> {one(b)}"
+    return srt_utils.format_span(a, b)
 
 
 if __name__ == "__main__":
-    argv = sys.argv[1:]
+    import argparse
 
-    def opt(name, default=None):
-        return argv[argv.index(name) + 1] if name in argv else default
-
-    keys = [a for a in argv if not a.startswith("--")]
-    skip = set()
-    for flag in ("--model", "--device", "--audio", "--astream", "--language"):
-        if flag in argv:
-            skip.add(argv[argv.index(flag) + 1])
-    keys = [k for k in keys if k not in skip]
-    if not keys:
-        raise SystemExit(__doc__)
-    astream = opt("--astream")
-    for k in keys:
-        transcribe(k, model_name=opt("--model", DEFAULT_MODEL),
-                   device=opt("--device", "auto"), audio=opt("--audio"),
-                   astream=int(astream) if astream is not None else None,
-                   language=opt("--language"), center="--no-center" not in argv)
+    ap = argparse.ArgumentParser(
+        description="Create source-language subtitles by ASR when a title has no "
+                    "usable text subtitle track.")
+    ap.add_argument("keys", nargs="+", help="title key(s) from the project config")
+    ap.add_argument("--model", default=DEFAULT_MODEL)
+    ap.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
+    ap.add_argument("--audio", help="reuse a prepared 16 kHz mono wav")
+    ap.add_argument("--astream", type=int, help="force a source audio stream index")
+    ap.add_argument("--language", help="override the source language code")
+    ap.add_argument("--no-center", dest="center", action="store_false",
+                    help="do not isolate the 5.1 front-center channel")
+    ap.add_argument("--vad", action="store_true",
+                    help="re-enable the Silero VAD pre-pass (drops shouted dialogue)")
+    ap.add_argument("--fill-gaps", metavar="REF.srt",
+                    help="after transcribing, re-scan stretches a reference track "
+                         "cues but the draft has nothing near (timing only)")
+    ap.add_argument("--only-fill", action="store_true",
+                    help="skip transcription; run the gap fill on an existing draft")
+    a = ap.parse_args()
+    for k in a.keys:
+        if not a.only_fill:
+            transcribe(k, model_name=a.model, device=a.device, audio=a.audio,
+                       astream=a.astream, language=a.language, center=a.center, vad=a.vad)
+        if a.fill_gaps:
+            fill_gaps(k, a.fill_gaps, model_name=a.model, device=a.device, audio=a.audio)

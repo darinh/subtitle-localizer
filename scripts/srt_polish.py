@@ -32,6 +32,7 @@ import srt_utils
 CFG = config.load()
 PUNCT_ONLY = re.compile(r"^[\W_]+$", re.U)
 MIN_GAP = 0.04            # keep a visible frame-ish gap between consecutive cues
+DUP_GAP = 1.5             # identical text further apart than this is a real repeat
 
 
 def _norm(s):
@@ -69,10 +70,14 @@ def polish(path, out_path=None, dry_run=False, verbose=True):
     items.sort(key=lambda x: (x["start"], x["end"]))
 
     # --- 2. collapse consecutive identical cues (ASR stutter loop) ----------
+    # Only when they are ADJACENT IN TIME. A line genuinely repeated later in the
+    # film is not a loop, and merging it would delete a cue and stretch the
+    # survivor across the gap between them.
     merged = []
     for it in items:
         if merged and _norm(re.sub(r"</?[ib]>", "", it["text"])) == \
-                _norm(re.sub(r"</?[ib]>", "", merged[-1]["text"])):
+                _norm(re.sub(r"</?[ib]>", "", merged[-1]["text"])) \
+                and (it["start"] - merged[-1]["end"]) <= DUP_GAP:
             merged[-1]["end"] = max(merged[-1]["end"], it["end"])
             stats["collapsed_loops"] += 1
             continue
@@ -99,8 +104,11 @@ def polish(path, out_path=None, dry_run=False, verbose=True):
         ceiling = max(nxt - MIN_GAP, it["start"] + 0.05)
         if it["end"] > ceiling:
             it["end"] = ceiling
-        if (it["end"] - it["start"]) < min_dur and it["end"] < ceiling:
-            it["end"] = min(it["start"] + min_dur, ceiling)
+        # extend in whole milliseconds so the result actually clears min_duration
+        # once serialized; float addition lands a hair under and re-flags the cue.
+        want = (srt_utils.ms(it["start"]) + srt_utils.ms(min_dur)) / 1000.0
+        if it["end"] < want and it["end"] < ceiling:
+            it["end"] = min(want, ceiling)
             stats["extended_short"] += 1
         plain = re.sub(r"</?[ib]>", "", it["text"]).replace("\n", " ")
         need = len(plain.replace(" ", "")) / max_cps
@@ -142,22 +150,23 @@ def polish(path, out_path=None, dry_run=False, verbose=True):
 
 
 def _fmt(a, b):
-    def one(t):
-        t = max(t, 0.0)
-        ms = int(round((t - int(t)) * 1000))
-        s = int(t)
-        if ms == 1000:
-            ms, s = 0, s + 1
-        return f"{s//3600:02d}:{(s%3600)//60:02d}:{s%60:02d},{ms:03d}"
-    return f"{one(a)} --> {one(b)}"
+    return srt_utils.format_span(a, b)
 
 
 if __name__ == "__main__":
-    argv = sys.argv[1:]
-    out = argv[argv.index("-o") + 1] if "-o" in argv else None
-    skip = {out} if out else set()
-    args = [a for a in argv if not a.startswith("-") and a not in skip]
-    if not args:
-        raise SystemExit(__doc__)
-    for p in args:
-        polish(p, out_path=out, dry_run="--dry-run" in argv)
+    import argparse
+
+    ap = argparse.ArgumentParser(
+        description="Deterministic structural + timing clean-up for an SRT. "
+                    "Never edits wording.")
+    ap.add_argument("paths", nargs="+", help="SRT file(s) to clean up")
+    ap.add_argument("-o", "--out", help="write here instead of in place "
+                                        "(only valid with a single input)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="report what would change without writing")
+    a = ap.parse_args()
+    if a.out and len(a.paths) > 1:
+        ap.error("-o takes a single input file; with several inputs each is "
+                 "polished in place (a .bak is kept)")
+    for p in a.paths:
+        polish(p, out_path=a.out, dry_run=a.dry_run)

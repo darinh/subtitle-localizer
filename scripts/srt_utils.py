@@ -68,6 +68,39 @@ def ts_seconds(t):
     return (int(h) * 60 + int(m)) * 60 + int(sec) + int(ms.ljust(3, "0")[:3]) / 1000
 
 
+def format_ts(t):
+    """Seconds -> 'HH:MM:SS,mmm'.
+
+    Rounding is applied to a TOTAL second count before the hour/minute/second
+    split, so a value that rounds up to the next second carries correctly: 59.9999
+    is 00:01:00,000, never the invalid 00:00:60,000. (Note the parser above will
+    happily accept a 60 in the seconds field, so a formatter that got this wrong
+    would ship a broken timestamp silently.)
+    """
+    t = max(float(t), 0.0)
+    ms = int(round(t * 1000))
+    s, ms = divmod(ms, 1000)
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{sec:02d},{ms:03d}"
+
+
+def format_span(a, b):
+    """Seconds pair -> a full SRT timestamp line."""
+    return f"{format_ts(a)} --> {format_ts(b)}"
+
+
+def ms(t):
+    """Seconds -> whole milliseconds, the resolution an SRT can actually carry.
+
+    Compare and derive durations through this rather than with raw floats: SRT
+    stores milliseconds, and `10.0 + 0.7` is 0.6999999999999993 in binary floating
+    point, so a cue extended to exactly the minimum duration otherwise re-parses as
+    fractionally under it and gets flagged by the very check that set it.
+    """
+    return int(round(float(t) * 1000))
+
+
 def cue_bounds(ts):
     a, b = re.split(r"\s*-->\s*", ts)
     return ts_seconds(a), ts_seconds(b)
@@ -109,6 +142,8 @@ def wrap_cue(text, width=42):
             if best_fit is None or d < best_fit[0]:
                 best_fit = (d, a, b)
     pick = best_fit or best_any
+    if pick is None:
+        return full          # a single token longer than width: nothing to split on
     return pick[1] + "\n" + pick[2]
 
 

@@ -398,7 +398,10 @@ check("collapsed loop keeps the word itself", _loop[0]["word"] == "no")
 _keep2 = transcribe._collapse_loops(_words(["no", "no"]))
 check("a natural double is NOT collapsed", len(_keep2) == 2)
 _phrase = transcribe._collapse_loops(_words(["get", "out"] * 6))
-check("phrase-level ASR loop collapsed", len(_phrase) < 12)
+check("phrase-level ASR loop collapsed to two repetitions",
+      [w["word"] for w in _phrase] == ["get", "out", "get", "out"])
+_triple = transcribe._collapse_loops(_words(["get", "out"] * 3))
+check("a natural triple repetition is NOT collapsed", len(_triple) == 6)
 
 _READ = {"max_cpl": 42, "max_lines": 2, "max_cps": 17, "min_duration": 0.7}
 # distinct words: a repeated token would be eaten by the loop collapser above and
@@ -419,9 +422,15 @@ check("a long silence forces a cue boundary", len(_gapped) >= 2)
 
 _cues = transcribe.build_cues(_words(["one", "two", "three", "four", "five"]), _READ)
 check("cue timestamps are monotonic and non-overlapping",
-      all(_cues[i]["end"] <= _cues[i + 1]["start"] + 1e-6 for i in range(len(_cues) - 1)))
+      len(_long) > 1 and all(_long[i]["end"] <= _long[i + 1]["start"] + 1e-6
+                             for i in range(len(_long) - 1)))
 check("every cue clears the minimum duration",
-      all((c["end"] - c["start"]) >= 0.7 - 1e-6 for c in _cues))
+      all((c["end"] - c["start"]) >= 0.7 - 1e-6 for c in _long))
+# a genuinely sub-minimum utterance must be stretched, not shipped at 0.2s
+_tiny = transcribe.build_cues(
+    [{"word": "Go", "start": 5.0, "end": 5.2}], {**_READ, "min_duration": 0.7})
+check("a too-short utterance is extended to min_duration",
+      len(_tiny) == 1 and (_tiny[0]["end"] - _tiny[0]["start"]) >= 0.7 - 1e-6)
 check("no cue starts before zero", all(c["start"] >= 0 for c in _cues))
 check("punctuation-only fragments dropped",
       transcribe.build_cues(_words(["...", "?!"]), _READ) == [])
@@ -429,6 +438,27 @@ check("ts formatter pads to SRT form",
       transcribe._fmt_ts(3671.5, 3672.25) == "01:01:11,500 --> 01:01:12,250")
 check("ts formatter carries a 999.6ms rounding into the next second",
       transcribe._fmt_ts(0.9999, 1.5).startswith("00:00:01,000"))
+# regression: rounding must carry through the MINUTE and HOUR boundary too.
+# The parser accepts a literal "60" in the seconds field, so a bad carry here
+# would ship an invalid timestamp silently rather than failing loud.
+check("ts rounding carries across the minute boundary",
+      srt_utils.format_ts(59.9999) == "00:01:00,000")
+check("ts rounding carries across the hour boundary",
+      srt_utils.format_ts(3599.9999) == "01:00:00,000")
+
+# repeated dialogue separated in time is REAL, not an ASR loop
+_far = transcribe._collapse_loops([
+    {"word": "Run", "start": 1.0, "end": 1.4},
+    {"word": "Run", "start": 60.0, "end": 60.4},
+    {"word": "Run", "start": 120.0, "end": 120.4}])
+check("repeats separated by silence are kept (not treated as a loop)", len(_far) == 3)
+_tight = transcribe._collapse_loops(
+    [{"word": "Run", "start": 1.0 + i * 0.45, "end": 1.4 + i * 0.45} for i in range(8)])
+check("back-to-back repeats ARE collapsed", len(_tight) < 8)
+
+# a single token longer than the line budget must not crash the wrapper
+check("wrap_cue survives an unsplittable over-long token",
+      srt_utils.wrap_cue("A" * 60, width=42) == "A" * 60)
 
 # the ASR draft must survive the pipeline's own strict parser + parse_source
 _asr_rows = [(i, transcribe._fmt_ts(c["start"], c["end"]),
@@ -470,6 +500,23 @@ check("adjacent duplicate text is a soft ASR-loop finding",
     "2\n00:00:01,000 --> 00:00:03,000\nMisnumbered.\n", encoding="utf-8")
 check("numbering break is a HARD finding", srt_qa.qa(WORK / "QA6.srt", verbose=False)[0] > 0)
 
+# a cue that starts BEFORE the previous one is a structural defect, not a soft note
+(WORK / "QA7.srt").write_text(
+    "1\n00:00:10,000 --> 00:00:11,000\nLater.\n\n"
+    "2\n00:00:01,000 --> 00:00:02,000\nEarlier.\n", encoding="utf-8")
+check("non-monotonic cue start is a HARD finding",
+      srt_qa.qa(WORK / "QA7.srt", verbose=False)[0] > 0)
+
+# findings must not depend on how many examples are DISPLAYED
+(WORK / "QA8.srt").write_text("\n\n".join(
+    f"{i}\n00:00:{i:02d},000 --> 00:00:{i:02d},300\n{'x' * 60}" for i in range(1, 9)),
+    encoding="utf-8")
+check("soft finding count is independent of --top",
+      srt_qa.qa(WORK / "QA8.srt", top=1, verbose=False)[1]
+      == srt_qa.qa(WORK / "QA8.srt", top=99, verbose=False)[1])
+check("a cue over target CPS is reported, not just counted",
+      srt_qa.qa(WORK / "QA8.srt", verbose=False)[1] > 0)
+
 # === 16. srt_polish: deterministic clean-up of a source SRT ==================
 print("[16] srt_polish")
 import srt_polish        # noqa: E402
@@ -504,18 +551,42 @@ check("re-wrapping preserves the words", _rows[0][2].replace("\n", " ") == _LONG
 _rows, _ = srt_polish.polish(WORK / "P4.srt", out_path=WORK / "P4.out.srt", verbose=False)
 check("two-speaker dialogue layout preserved", _rows[0][2] == "- Yes.\n- No.")
 
-# overlapping + too-short cues get fixed without reordering
+# overlapping + too-short cues get fixed without reordering. Cue 3 sits close
+# behind cue 2 so that min-duration extension would COLLIDE with it if unguarded.
 (WORK / "P5.srt").write_text(
     "1\n00:00:01,000 --> 00:00:05,000\nFirst.\n\n"
     "2\n00:00:03,000 --> 00:00:03,200\nSecond.\n\n"
-    "3\n00:00:20,000 --> 00:00:20,100\nThird.\n", encoding="utf-8")
+    "3\n00:00:03,500 --> 00:00:03,600\nThird.\n\n"
+    "4\n00:00:20,000 --> 00:00:20,100\nFourth.\n", encoding="utf-8")
 _rows, _st = srt_polish.polish(WORK / "P5.srt", out_path=WORK / "P5.out.srt", verbose=False)
 _b = [srt_utils.cue_bounds(ts) for _, ts, _ in _rows]
 check("overlap removed", all(_b[i][1] <= _b[i + 1][0] + 1e-6 for i in range(len(_b) - 1)))
 check("cue order preserved", _b == sorted(_b))
+check("no cue was silently deleted", len(_rows) == 4)
 check("trailing short cue extended to min duration", (_b[-1][1] - _b[-1][0]) >= 0.7 - 1e-6)
 check("a short cue boxed in by the next one is NOT extended past it",
-      _b[1][1] <= _b[2][0] + 1e-6)
+      _b[1][1] <= _b[2][0] + 1e-6 and (_b[1][1] - _b[1][0]) < 0.7)
+
+# identical text far apart is REAL repeated dialogue and must not be merged
+(WORK / "P6.srt").write_text(
+    "1\n00:00:01,000 --> 00:00:02,000\nRun!\n\n"
+    "2\n00:02:00,000 --> 00:02:01,000\nRun!\n", encoding="utf-8")
+_rows, _st = srt_polish.polish(WORK / "P6.srt", out_path=WORK / "P6.out.srt", verbose=False)
+check("identical cues far apart are NOT collapsed",
+      len(_rows) == 2 and _st["collapsed_loops"] == 0)
+
+# a min-duration extension must still clear the floor AFTER the SRT round-trip.
+# Raw float arithmetic lands a hair under (10.0 + 0.7 -> 0.6999999999999993), so
+# an in-memory-only assertion would pass while QA still flagged the cue.
+(WORK / "P7.srt").write_text(
+    "1\n00:00:10,000 --> 00:00:10,100\nHi.\n", encoding="utf-8")
+srt_polish.polish(WORK / "P7.srt", out_path=WORK / "P7.out.srt", verbose=False)
+_rt, _ = srt_utils.parse_srt((WORK / "P7.out.srt").read_text(encoding="utf-8"), strict=True)
+_st7, _en7 = srt_utils.cue_bounds(_rt[0]["ts"])
+check("extended cue clears min_duration in whole milliseconds",
+      srt_utils.ms(_en7) - srt_utils.ms(_st7) >= srt_utils.ms(0.7))
+check("polished cue is not re-flagged as sub-minimum by QA",
+      srt_qa.qa(WORK / "P7.out.srt", verbose=False)[1] == 0)
 
 # polished output must survive the strict parser and QA cleanly
 _h, _s = srt_qa.qa(WORK / "P5.out.srt", verbose=False)
