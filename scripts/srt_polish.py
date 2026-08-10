@@ -96,7 +96,13 @@ def polish(path, out_path=None, dry_run=False, verbose=True):
     for it in items:
         if merged and _norm(re.sub(r"</?[ib]>", "", it["text"])) == \
                 _norm(re.sub(r"</?[ib]>", "", merged[-1]["text"])) \
-                and (it["start"] - merged[-1]["end"]) <= DUP_GAP:
+                and (it["start"] - merged[-1]["end"]) <= DUP_GAP \
+                and bool(it.get("halluc")) == bool(merged[-1].get("halluc")):
+            # Never merge across differing flags. `_norm` strips internal
+            # punctuation, so "Thanks, for watching!" normalizes equal to the
+            # flagged "Thanks for watching!" while failing the whole-cue pattern
+            # itself — merging them would let the survivor inherit the other's
+            # fate, in whichever direction they happen to be ordered.
             merged[-1]["end"] = max(merged[-1]["end"], it["end"])
             stats["collapsed_loops"] += 1
             continue
@@ -146,6 +152,11 @@ def polish(path, out_path=None, dry_run=False, verbose=True):
     if removed_halluc:
         items = [it for it in items if not it.get("halluc")]
         stats["dropped_hallucination"] = len(removed_halluc)
+    # The audit record travels with the return value, not just stdout, so a
+    # programmatic caller (verbose=False) can still say WHICH cues were destroyed.
+    # Underscore-prefixed keys are not printed as counters.
+    stats["_removed_hallucinations"] = [
+        (srt_utils.format_ts(st), txt) for st, txt in removed_halluc]
 
     rows = [(i, _fmt(it["start"], it["end"]), it["text"]) for i, it in enumerate(items, 1)]
 
@@ -153,7 +164,7 @@ def polish(path, out_path=None, dry_run=False, verbose=True):
         name = os.path.basename(str(path))
         print(f"== polish {name}: {len(cues)} -> {len(rows)} cues ==")
         for k, v in stats.items():
-            if v:
+            if v and not k.startswith("_"):
                 print(f"   {k}: {v}")
         if removed_halluc:
             # a deletion is never silent: name EVERY cue that was removed, uncapped

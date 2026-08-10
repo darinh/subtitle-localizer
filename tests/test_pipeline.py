@@ -74,18 +74,26 @@ def check(name, cond):
         print(f"  FAIL {name}")
 
 
-def expect_raises(name, fn):
+def expect_raises(name, fn, expected=SystemExit):
+    """Assert fn() fails, and fails the way we MEANT it to.
+
+    A catch-all here would pass on a typo in the lambda (NameError) or on an
+    unhandled TypeError from deep inside — it would certify a crash as a
+    validation. So the exception type has to match what the code promises.
+    """
     global PASS, FAIL
     try:
         fn()
-        FAIL += 1
-        print(f"  FAIL {name} (expected an error)")
-    except SystemExit:
-        PASS += 1
-        print(f"  ok   {name} (raised)")
-    except Exception as e:  # noqa
+    except expected as e:
         PASS += 1
         print(f"  ok   {name} (raised {type(e).__name__})")
+    except Exception as e:  # noqa: BLE001 - the wrong failure is still a failure
+        FAIL += 1
+        print(f"  FAIL {name} (raised {type(e).__name__}: {e}, "
+              f"expected {expected.__name__})")
+    else:
+        FAIL += 1
+        print(f"  FAIL {name} (expected an error)")
 
 
 print("[0] project overrides")
@@ -175,7 +183,8 @@ cues, _ = srt_utils.parse_srt("1\n00:00:01,000 --> 00:00:02,000\nA\n\nB\n")
 check("internal blank line preserved", len(cues) == 1 and cues[0]["text"] == ["A", "", "B"])
 check("ts hour handling", abs(srt_utils.ts_seconds("01:14:13,500") - (3600 + 14 * 60 + 13.5)) < 1e-6)
 expect_raises("strict parse rejects missing timestamp",
-              lambda: srt_utils.parse_srt("1\nnot-a-timestamp\nX\n", strict=True))
+              lambda: srt_utils.parse_srt("1\nnot-a-timestamp\nX\n", strict=True),
+              expected=ValueError)
 
 # === 2. parse_source =========================================================
 print("[2] parse_source")

@@ -47,8 +47,13 @@ import re
 # Whole-cue patterns, matched case-insensitively against text that has already had
 # tags, line breaks and edge punctuation stripped. Each is anchored to a shape that
 # ordinary dialogue does not have; see the note about open wildcards above.
-_CREDIT = (r"(?:[A-Z0-9\u00c0-\u00dc][\w.\-']*|\S*\.(?:org|com|net|tv)\S*)"
-           r"(?:\s+(?:[A-Z0-9\u00c0-\u00dc][\w.\-']*|and|&|de|van|der|la|el)){0,4}")
+#
+# A credit tail: a genuine attribution names someone. `(?-i:...)` restores
+# case-sensitivity inside the group — these patterns are compiled with re.I, which
+# would otherwise make the [A-Z] class match lowercase and turn this back into
+# "any word", the very hole it exists to close.
+_CREDIT = (r"(?-i:(?:[A-Z0-9\u00c0-\u00dc][\w.\-']*|\S*\.(?:org|com|net|tv)\S*)"
+           r"(?:\s+(?:[A-Z0-9\u00c0-\u00dc][\w.\-']*|and|&|de|van|der|la|el)){0,4})")
 
 DEFAULT_PATTERNS = [
     # "Thanks for watching!" and its close variants, and nothing else.
@@ -65,22 +70,28 @@ DEFAULT_PATTERNS = [
     r"(?:in\s+the\s+next\s+(?:one|video|episode)|next\s+(?:video|episode))",
     # subscribe. A bare "Subscribe." is plausible dialogue, so require one of the
     # channel-idiom affordances around it.
-    r"(?:please\s+subscribe(?:\s+to\s+(?:my|our|the)\s+channel)?"
+    r"(?:please\s+subscribe\s+to\s+(?:my|our|the)\s+channel"
     r"|(?:don'?t\s+forget\s+to\s+)?subscribe\s+to\s+(?:my|our|the)\s+channel"
     r"|don'?t\s+forget\s+to\s+(?:like\s+and\s+)?subscribe"
     r"|like[,\s]+(?:comment[,\s]+)?(?:and\s+)?subscribe)",
-    # attribution credits: the tail must look like a NAME or a domain, which is what
-    # separates "Subtitles by Amara.org" from "Subtitles by themselves do not help."
+    # attribution credits: the tail must NAME someone, which is what separates
+    # "Subtitles by Amara.org" from "Subtitles by themselves do not help."
     r"(?:sub(?:titles?|titling)|captions?|transcription|translation)"
     r"\s*(?::|\bby\b|\bfrom\b)\s*" + _CREDIT,
-    r".{0,40}\bamara\.org\b.{0,40}",
+    # the amara.org credit. Either the cue is essentially just the domain, or it is
+    # explicitly a subtitle credit — "I found it on amara.org." is neither.
+    r"(?:(?:sub(?:titles?|titling)|captions?)\b.{0,40}\bamara\.org\b.{0,30}"
+    r"|(?:https?://)?(?:www\.)?amara\.org\S*)",
     # a cue that is essentially just a URL
     r"(?:(?:please\s+)?(?:visit|see|go\s+to|check\s+out)\s+)?(?:https?://)?www\.\S+",
-    # a copyright line: pinned to a year or to "all rights reserved", so
-    # "Copyright law will not save you" is not boilerplate.
+    # a copyright line: pinned to a year, so "Copyright law will not save you" is not
+    # boilerplate.
     r"(?:\u00a9|\(c\)|copyright)\s*(?:\u00a9\s*)?\d{4}(?:\s*[-\u2013]\s*\d{4})?"
-    r"(?:\s+" + _CREDIT + r")?",
-    r".{0,50}\ball\s+rights\s+reserved\b.{0,20}",
+    r"(?:\s+" + _CREDIT + r")?(?:[.,]?\s*all\s+rights\s+reserved)?",
+    # "All rights reserved" only as a notice of its own, optionally after a
+    # copyright marker — never buried in a sentence about a contract.
+    r"(?:(?:\u00a9|\(c\)|copyright)\s*(?:\d{4})?\s*.{0,30}?[.,]?\s*)?"
+    r"all\s+rights\s+reserved",
 ]
 
 _TAGS = re.compile(r"</?[ib]>", re.I)
@@ -150,32 +161,59 @@ def _as_pattern_list(extra):
 
 
 def _section(cfg):
-    a = getattr(cfg, "asr", None) or {}
+    """The project config's `asr:` mapping, validated.
+
+    A missing section is fine (defaults apply). Anything else that is not a mapping
+    is a mistake and must fail loud rather than be coerced to {}: `asr: false` reads
+    to a human as "turn this off", and silently defaulting it would instead turn
+    deletion ON.
+    """
+    a = getattr(cfg, "asr", None)
+    if a is None or a == {}:
+        return {}
     if not isinstance(a, dict):
-        raise SystemExit("FAIL: the project config's `asr:` section must be a "
-                         f"mapping (got {type(a).__name__})")
+        raise SystemExit(
+            f"FAIL: the project config's `asr:` section must be a mapping, got "
+            f"{a!r}. To turn the filter off write:\n"
+            "         asr:\n           strip_hallucinations: false")
     return a
+
+
+def _bool_opt(section, key, default):
+    """A strict boolean. YAML's `false` is a bool, but a QUOTED \"false\" is a
+    truthy string — accepting it would silently enable deletion."""
+    if key not in section:
+        return default
+    v = section[key]
+    if isinstance(v, bool):
+        return v
+    raise SystemExit(f"FAIL: asr.{key} must be true or false (got {v!r}). "
+                     "Remove the quotes if you wrote it as a string.")
 
 
 def patterns_from_config(cfg):
     """Compile using a loaded project config's `asr:` section."""
     a = _section(cfg)
     return compile_patterns(a.get("hallucination_extra_patterns"),
-                            bool(a.get("hallucination_patterns_replace", False)))
+                            _bool_opt(a, "hallucination_patterns_replace", False))
 
 
 def min_repeats_from_config(cfg, default=3):
     a = _section(cfg)
     raw = a.get("hallucination_min_repeats", default)
-    try:
-        return max(1, int(raw))
-    except (TypeError, ValueError):
+    # bool is an int subclass: `false` would become 0 -> clamped to 1, which quietly
+    # removes the recurrence safeguard entirely. Reject it.
+    if isinstance(raw, bool) or not isinstance(raw, int):
         raise SystemExit("FAIL: asr.hallucination_min_repeats must be an integer "
-                         f"(got {raw!r})")
+                         f">= 1 (got {raw!r})")
+    if raw < 1:
+        raise SystemExit("FAIL: asr.hallucination_min_repeats must be >= 1 "
+                         f"(got {raw}); 0 would delete every single match")
+    return raw
 
 
 def enabled_for_config(cfg):
-    return bool(_section(cfg).get("strip_hallucinations", True))
+    return _bool_opt(_section(cfg), "strip_hallucinations", True)
 
 
 def match_family(text, patterns):
@@ -225,8 +263,9 @@ if __name__ == "__main__":
               "Subtitles by Amara.org", "Subtitles: J. Doe",
               "See you in the next video!", "Visit www.example.com",
               "\u00a9 2010 Some Studio", "(c) 2010 Some Studio",
-              "All rights reserved.", "<i>Thanks for watching!</i>",
-              "(Thanks for watching!)"]
+              "All rights reserved.", "\u00a9 2010 Some Studio. All rights reserved.",
+              "Subtitles by the Amara.org community", "amara.org",
+              "<i>Thanks for watching!</i>", "(Thanks for watching!)"]
     # Every one of these is ordinary dialogue that an earlier, looser pattern set
     # deleted. They are the regression suite for this module.
     keep = ["Thanks for watching my back out there.",
@@ -242,6 +281,15 @@ if __name__ == "__main__":
             "Translations from the Greek are hard.",
             "Copyright law will not save you",
             "Copyright is a complicated subject in law.",
+            "Copyright 2024 is going to be terrible.",
+            "The contract says all rights reserved for the studio.",
+            "Are you sure all rights reserved is the default?",
+            "Subtitles by themselves do not help.",
+            "Translations from machines are often wrong.",
+            "Subtitles by Monday we need them.",
+            "Subtitles by tomorrow, please.",
+            "I found it on amara.org.",
+            "They uploaded the video to amara.org yesterday.",
             "Thanks for listening, see you at dinner",
             "Go to www.police.gov to report it."]
     for t in halluc:
@@ -273,5 +321,36 @@ if __name__ == "__main__":
         assert "invalid ASR hallucination regex" in str(e), e
     else:
         raise AssertionError("accepted an invalid regex")
+
+    # config validation: a falsy non-mapping must not be coerced into "defaults on",
+    # a quoted boolean must not read as true, and min_repeats must not collapse to 1
+    class _C:
+        def __init__(self, asr):
+            self.asr = asr
+
+    for bad_section in (False, 0, "off", []):
+        try:
+            enabled_for_config(_C(bad_section))
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError(f"accepted asr: {bad_section!r}")
+    for bad in ("false", "true", 1, 0):
+        try:
+            enabled_for_config(_C({"strip_hallucinations": bad}))
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError(f"accepted strip_hallucinations: {bad!r}")
+    for bad in (False, True, 0, -1, "three", 2.5):
+        try:
+            min_repeats_from_config(_C({"hallucination_min_repeats": bad}))
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError(f"accepted min_repeats: {bad!r}")
+    assert enabled_for_config(_C(None)) is True
+    assert enabled_for_config(_C({"strip_hallucinations": False})) is False
+    assert min_repeats_from_config(_C({"hallucination_min_repeats": 5})) == 5
     print("asr_artifacts self-test OK:", len(pats), "patterns,",
           len(keep), "real-dialogue regressions")
