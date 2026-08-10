@@ -137,10 +137,18 @@ because they sit *inside* dialogue scenes where the reference does have nearby c
 `scripts/asr_artifacts.py` is the single policy both the transcriber and the clean-up pass
 read. Because it deletes, the rule is deliberately narrow — a cue is dropped only when
 **its whole text** is boilerplate (a cue *containing* the phrase is real dialogue wrapped
-around it) **and** that pattern family **recurs** in the same file. So a character who
+around it) **and** that exact text **recurs** in the same file. So a character who
 genuinely says it once keeps the line. Detection is reported at any count, deletion needs
-the repeat threshold, and every deleted cue is printed. Tune under `asr:` in the project
-config (`strip_hallucinations`, `hallucination_min_repeats`, `hallucination_extra_patterns`).
+the repeat threshold, every deleted cue is printed, and removal happens after all timing
+decisions so a surviving cue's timing never depends on what was deleted beside it. Tune
+under `asr:` in the project config (`strip_hallucinations`, `hallucination_min_repeats`,
+`hallucination_extra_patterns`).
+
+> The patterns are narrow on purpose, and kept that way by an adversarial regression set:
+> every line of ordinary dialogue that a code review managed to get deleted is now a test
+> case. Two traps worth knowing if you add a pattern — a trailing `.{0,N}` reads as "this
+> word followed by anything", which is just a sentence; and a `[A-Z]` anchor inside a
+> pattern compiled with `re.I` matches lowercase too, so wrap it in `(?-i:…)`.
 
 `srt_qa.py` complements `validate_srt.py`: the validator judges a *delivered target*
 against its source and the target-language guardrails, while `srt_qa.py` judges **any**

@@ -74,8 +74,26 @@ before changing anything. None reference a specific title — they generalize.
     same title — and the reference-support check does NOT catch them, because they sit
     *inside* dialogue scenes where the reference does have nearby cues. Detect on
     WHOLE-cue match only (a cue containing the phrase is real dialogue wrapped around
-    it) plus recurrence of the pattern family; report at any count, delete only on
-    recurrence, and print every deletion.
+    it) plus recurrence of the exact text; report at any count, delete only on
+    recurrence, print every deletion, and remove them LAST so a survivor's timing
+    never depends on what was deleted beside it.
+18c. **A deletion rule needs an adversary, and its patterns rot toward breadth.**
+    Three independent model families each constructed ordinary dialogue that a
+    "surely safe" boilerplate matcher deleted. Two lessons generalize: a pattern
+    ending in an open `.{0,N}` is just "this word followed by anything", i.e. a
+    sentence; and a case-sensitive anchor inside a pattern compiled with `re.I` is
+    silently *not* an anchor — `[A-Z]` matches lowercase, so a "must look like a
+    name" tail quietly becomes "any word". Wrap it in `(?-i:…)`. Keep every string
+    an adversary constructs as a regression case; a keep-test that passes for an
+    incidental reason (token count, a leading article) hides the very hole it names.
+18d. **A coverage metric counts cues, not meaning — so hallucinations flatter it.**
+    Measuring an ASR draft against a professional reference by "does a cue exist
+    within ±3s" scores a boilerplate cue as coverage. Removing 27 hallucinations
+    moved the measured gap from 1.7% to 5.6%: 43 stretches had been "covered" by
+    garbage. Re-scanning those stretches returned mostly *fresh* hallucinations of
+    the same phrase, which is the strongest possible evidence there is nothing
+    there to recognize. Always re-measure coverage AFTER artifact removal, and
+    treat a suspiciously good coverage number on a noisy title as a smell.
 
 ## Source / extraction
 19. **Mind the subtitle codec.** Image-based subs (PGS/VOBSUB) need OCR; if there is no

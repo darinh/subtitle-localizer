@@ -635,10 +635,24 @@ _REAL_DIALOGUE = [
     "See you guys next week.",
     "Titles by that director are all garbage.",
     "Subtitles by themselves do not tell the whole story.",
+    # short + lowercase: these are the cases that actually prove the credit tail
+    # requires a NAME. The long sentence above passes on token count alone, so it
+    # stayed green while `re.I` was quietly defeating the capitalization anchor.
+    "Subtitles by hand take forever.",
+    "Subtitles by themselves are useless.",
+    "Caption by hand is slow.",
+    "Translation by machine is bad.",
+    "Subtitles by Monday we need them.",
     "Translations by machines never sound right.",
     "Translations from the Greek are hard.",
+    "Translations from machines are often wrong.",
     "Copyright law will not save you",
     "Copyright is a complicated subject in law.",
+    "Copyright 2024 is going to be terrible.",
+    "The contract says all rights reserved for the studio.",
+    "Are you sure all rights reserved is the default?",
+    "I found it on amara.org.",
+    "They uploaded the video to amara.org yesterday.",
     "Thanks for listening, see you at dinner",
     "Go to www.police.gov to report it.",
 ]
