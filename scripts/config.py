@@ -74,6 +74,7 @@ class Config:
         self.named_entities = project.get("named_entities_keep_verbatim", []) or []
         self.features = project.get("features", {}) or {}
         self.catchphrases = project.get("catchphrases", []) or []
+        self.asr = project.get("asr", {}) or {}
         self.glossary = project.get("glossary", "glossary.md")
 
         # readability: guardrails defaults overridden by project

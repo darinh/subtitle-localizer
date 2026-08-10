@@ -118,9 +118,29 @@ the draft stays an original transcript rather than a derivative of someone else'
 > problem: it is what exposed that a VAD pre-pass was silently discarding shouted dialogue.
 
 `srt_polish.py` fixes only structural and timing defects — it drops empty and
-punctuation-only cues, collapses genuine stutter loops (never repeats separated in time),
-re-wraps to the line budget, enforces minimum duration, and removes overlaps. It **never
-edits wording**: cues that need condensing are reported, not truncated.
+punctuation-only cues, removes ASR boilerplate hallucinations, collapses genuine stutter
+loops (never repeats separated in time), re-wraps to the line budget, enforces minimum
+duration, and removes overlaps. It **never edits wording**: cues that need condensing are
+reported, not truncated.
+
+### ASR boilerplate hallucinations
+Starved of speech — under score, screaming or near-silence — a recognizer falls back on
+phrasing that saturated its training data and emits it as a lone, well-formed cue:
+*"Thanks for watching!"*, *"Please subscribe"*, *"Subtitles by …"*. On one 88-minute film
+that was **27 of 964 cues (2.8%)**, while the two professional subtitle tracks for the
+same title contained the phrase **zero** times in 1908 cues.
+
+Nothing else in the pipeline sees them. The stutter-loop guards are gated on *adjacency*
+and these are scattered minutes apart; the reference-coverage check misses them too,
+because they sit *inside* dialogue scenes where the reference does have nearby cues.
+
+`scripts/asr_artifacts.py` is the single policy both the transcriber and the clean-up pass
+read. Because it deletes, the rule is deliberately narrow — a cue is dropped only when
+**its whole text** is boilerplate (a cue *containing* the phrase is real dialogue wrapped
+around it) **and** that pattern family **recurs** in the same file. So a character who
+genuinely says it once keeps the line. Detection is reported at any count, deletion needs
+the repeat threshold, and every deleted cue is printed. Tune under `asr:` in the project
+config (`strip_hallucinations`, `hallucination_min_repeats`, `hallucination_extra_patterns`).
 
 `srt_qa.py` complements `validate_srt.py`: the validator judges a *delivered target*
 against its source and the target-language guardrails, while `srt_qa.py` judges **any**
@@ -149,9 +169,10 @@ python tests/test_pipeline.py        # 68 self-tests of every integrity guarante
 config/      project.example.yaml + guardrails/es-419.yaml (reusable language pack)
 prompts/     worker.md, reviewer.md, gate_plan_review.md  (LLM templates)
 templates/   glossary.template.md
-scripts/     config, srt_utils, extract, transcribe, srt_qa, parse_source, slice_ranges,
-             normalize_batch, autofix, build_srt, validate_srt, align_check, reconstruct,
-             apply_patch, finalize_title, shot, state_db
+scripts/     config, srt_utils, asr_artifacts, extract, transcribe, srt_qa, srt_polish,
+             parse_source, slice_ranges, normalize_batch, autofix, build_srt,
+             validate_srt, align_check, reconstruct, apply_patch, finalize_title,
+             shot, state_db
 tests/       test_pipeline.py
 docs/        DESIGN.md, ORCHESTRATION.md, LEARNINGS.md
 ```

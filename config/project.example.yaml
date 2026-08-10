@@ -61,6 +61,21 @@ readability:
   # max_cps: 17
   # max_cpl: 42
 
+# ---- ASR draft settings (only used when transcribe.py makes the source SRT) --
+# A recognizer with no usable speech falls back on phrasing that saturated its
+# training data — "Thanks for watching!", "Please subscribe", "Subtitles by ...".
+# These land as lone, well-formed cues scattered across the runtime, so the
+# stutter-loop guards never see them. transcribe.py drops them, srt_qa.py reports
+# them and srt_polish.py removes them from an existing SRT.
+asr:
+  strip_hallucinations: true              # set false to keep them and only report
+  hallucination_min_repeats: 3            # delete only a family that recurs this often
+  # Extra WHOLE-CUE regexes appended to the built-ins (scripts/asr_artifacts.py).
+  # Single-quote them so backslashes stay literal. A pattern loose enough to match
+  # ordinary dialogue will delete that dialogue — anchor it to the boilerplate.
+  hallucination_extra_patterns: []
+  # hallucination_patterns_replace: true  # ignore the built-ins entirely (rare)
+
 # ---- Optional advanced features ---------------------------------------------
 features:
   allow_merge: false                      # opt-in: workers may merge ADJACENT same-speaker cues (N..M|||text)

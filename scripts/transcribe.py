@@ -16,7 +16,8 @@ obeys the same rules the validator later enforces:
   * never emits a cue longer than max_lines * max_cpl characters;
   * grows a too-fast cue into the following silence (never past the next cue)
     to pull CPS down, and enforces min_duration;
-  * strips ASR artifacts: repetition loops, zero-width/again-and-again fillers,
+  * strips ASR artifacts: repetition loops, boilerplate hallucinations ("Thanks for
+    watching!" emitted over music/silence), zero-width/again-and-again fillers,
     and cues that are pure punctuation;
   * guarantees strictly ordered, non-overlapping timestamps.
 
@@ -37,6 +38,7 @@ import subprocess
 
 import config
 import srt_utils
+import asr_artifacts
 
 CFG = config.load()
 WORK = CFG.work
@@ -426,6 +428,12 @@ def fill_gaps(key, reference, model_name=DEFAULT_MODEL, device="auto", audio=Non
             for c, (s, e) in zip(draft, have)]
     rows += [{"start": c["start"], "end": c["end"], "text": c["text"]} for c in added]
     rows.sort(key=lambda x: (x["start"], x["end"]))
+    # A gap window is exactly the kind of stretch (score, screaming, near-silence)
+    # that provokes boilerplate, so re-run the whole-file check over the MERGED
+    # track — the recurrence count has to see the finished artifact, not one window.
+    before_merge = len(rows)
+    rows = _strip_hallucinations(rows, "the merged draft")
+    n_halluc = before_merge - len(rows)
     for i, it in enumerate(rows):           # keep the merged track non-overlapping
         if i and it["start"] < rows[i - 1]["end"]:
             it["start"] = rows[i - 1]["end"] + 0.001
@@ -439,7 +447,8 @@ def fill_gaps(key, reference, model_name=DEFAULT_MODEL, device="auto", audio=Non
     if len(reparsed) != len(out):
         raise SystemExit(f"FAIL: merged draft did not re-parse ({len(reparsed)} vs {len(out)})")
     print(f"{key}: recovered {len(added)} cue(s) from {scanned} window(s) "
-          f"-> {len(draft)} + {len(added)} = {len(out)} cues")
+          f"-> {len(draft)} + {len(added)}"
+          f"{f' - {n_halluc} hallucinated' if n_halluc else ''} = {len(out)} cues")
     return draft_path
 
 
@@ -509,6 +518,7 @@ def transcribe(key, model_name=DEFAULT_MODEL, device="auto", audio=None,
         raise SystemExit(f"FAIL: {key}: ASR produced no words — wrong audio stream or silent track?")
 
     cues = build_cues(words, CFG.readability)
+    cues = _strip_hallucinations(cues, "the transcript")
     if not cues:
         raise SystemExit(f"FAIL: {key}: no cues survived segmentation")
 
@@ -531,6 +541,30 @@ def transcribe(key, model_name=DEFAULT_MODEL, device="auto", audio=None,
 
 def _fmt_ts(a, b):
     return srt_utils.format_span(a, b)
+
+
+def _strip_hallucinations(cues, label):
+    """Drop ASR boilerplate hallucinations from a WHOLE-FILE cue list.
+
+    Deliberately not inside build_cues: build_cues is also called per gap window,
+    and the recurrence test that makes deletion safe only means anything when it
+    can see the complete artifact. Callers apply it once, to the finished list.
+    """
+    if not cues or not asr_artifacts.enabled_for_config(CFG):
+        return cues
+    drop, _matches, _counts = asr_artifacts.find(
+        [c["text"] for c in cues],
+        asr_artifacts.patterns_from_config(CFG),
+        asr_artifacts.min_repeats_from_config(CFG))
+    if not drop:
+        return cues
+    print(f"   dropped {len(drop)} ASR boilerplate hallucination(s) from {label}:")
+    for i in sorted(drop)[:10]:
+        print(f"      {srt_utils.format_ts(cues[i]['start'])}  "
+              f"{asr_artifacts.plain(cues[i]['text'])!r}")
+    if len(drop) > 10:
+        print(f"      ... +{len(drop)-10} more")
+    return [c for i, c in enumerate(cues) if i not in drop]
 
 
 if __name__ == "__main__":

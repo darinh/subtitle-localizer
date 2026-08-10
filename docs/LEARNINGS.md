@@ -65,6 +65,17 @@ before changing anything. None reference a specific title — they generalize.
 18. **Self-heal recurring worker output bugs** in the normalizer: a literal `\n`, a
     PowerShell backtick escape, a BOM, and double-encoded mojibake — none legitimately
     appear in dialogue, so the rewrite is safe; add a unit test for each.
+18b. **ASR boilerplate hallucination is a SEPARATE failure from an ASR loop, and every
+    loop guard steps over it.** A stutter guard is gated on adjacency; over music,
+    screaming or near-silence the recognizer instead emits a lone well-formed cue of
+    training-data filler ("Thanks for watching!", "Please subscribe", "Subtitles by
+    …"), scattered minutes apart. Measured: 27 of 964 cues (2.8%) on one film, versus
+    zero occurrences of the phrase across 1908 cues of two professional tracks for the
+    same title — and the reference-support check does NOT catch them, because they sit
+    *inside* dialogue scenes where the reference does have nearby cues. Detect on
+    WHOLE-cue match only (a cue containing the phrase is real dialogue wrapped around
+    it) plus recurrence of the pattern family; report at any count, delete only on
+    recurrence, and print every deletion.
 
 ## Source / extraction
 19. **Mind the subtitle codec.** Image-based subs (PGS/VOBSUB) need OCR; if there is no

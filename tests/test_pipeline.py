@@ -598,6 +598,85 @@ check("polished output passes QA with no HARD findings", _h == 0)
 expect_raises("polish refuses a malformed SRT rather than guessing",
               lambda: srt_polish.polish(WORK / "BAD.srt", verbose=False))
 
+print("[17] asr_artifacts (boilerplate hallucinations)")
+import asr_artifacts      # noqa: E402
+_pats = asr_artifacts.compile_patterns()
+
+# --- detection: the recognizable boilerplate families ---
+for _t in ("Thanks for watching!", "Thank you for watching.",
+           "thanks for watching", "<i>Thanks for watching!</i>",
+           "Thanks for watching this video!", "Please subscribe to my channel",
+           "Don't forget to like and subscribe", "Subtitles by Amara.org",
+           "Subtitles: J. Doe", "See you in the next video!",
+           "Visit www.example.com", "\u00a9 2010 Some Studio"):
+    check(f"detected boilerplate {_t!r}", asr_artifacts.match_family(_t, _pats) is not None)
+
+# --- the dangerous direction: real dialogue must survive ---
+# Each of these CONTAINS boilerplate wording but is a real line; deleting one is
+# the failure this whole feature must not cause.
+for _t in ("Thanks for watching my back out there.",
+           "He said thanks for watching, then he shot him.",
+           "I don't know.", "Help!", "Thanks.", "Watching. Just watching.",
+           "Subscribe to the theory that we're all doomed.",
+           "Thank you.", "Thanks for the ride.",
+           "The titles by that director are all garbage."):
+    check(f"kept real dialogue {_t!r}", asr_artifacts.match_family(_t, _pats) is None)
+
+# --- the repeat threshold ---
+_drop, _matches, _counts = asr_artifacts.find(
+    ["Thanks for watching!", "Hello.", "Goodbye."], _pats, min_repeats=3)
+check("a single boilerplate utterance is NOT deleted", _drop == set())
+check("...but it is still reported", set(_matches) == {0})
+
+_drop2, _, _ = asr_artifacts.find(
+    ["Thanks for watching!", "Hi.", "Thank you for watching.", "Bye.",
+     "thanks for watching"], _pats, min_repeats=3)
+check("a recurring family IS deleted (counted per family, not per exact string)",
+      _drop2 == {0, 2, 4})
+
+_drop3, _, _ = asr_artifacts.find(["Please subscribe"] * 3, _pats, min_repeats=4)
+check("min_repeats is honoured", _drop3 == set())
+
+# --- end to end through polish: the artifact loses only the hallucinations ---
+_H_SRT = "".join(
+    f"{i}\n00:{i//60:02d}:{i%60:02d},000 --> 00:{i//60:02d}:{i%60:02d},900\n{t}\n\n"
+    for i, t in enumerate(
+        ["Get in the boat!", "Thanks for watching!", "It's coming up fast.",
+         "Thank you for watching.", "Thanks for watching my back out there.",
+         "Swim!", "Thanks for watching!", "Behind you!"], start=1))
+(WORK / "H1.srt").write_text(_H_SRT, encoding="utf-8")
+_hrows, _hstats = srt_polish.polish(WORK / "H1.srt", out_path=WORK / "H1.out.srt",
+                                    verbose=False)
+_htexts = [r[2].replace("\n", " ") for r in _hrows]
+check("polish removed exactly the 3 hallucinated cues",
+      _hstats["dropped_hallucination"] == 3 and len(_hrows) == 5)
+check("polish kept the look-alike real line",
+      any("Thanks for watching my back" in t for t in _htexts))
+check("no hallucinated cue survived polish",
+      not any(asr_artifacts.match_family(t, _pats) is not None for t in _htexts))
+check("surviving cues renumbered from 1",
+      [r[0] for r in _hrows] == list(range(1, len(_hrows) + 1)))
+check("polished hallucination-free output re-parses and passes QA",
+      srt_qa.qa(WORK / "H1.out.srt", verbose=False)[0] == 0)
+
+# QA must SEE them before polish removes them, and say so
+_qh, _qs = srt_qa.qa(WORK / "H1.srt", verbose=False)
+check("QA reports hallucinations as soft findings, not HARD", _qh == 0)
+
+# a deleted cue must never take a real neighbour's timing with it
+_kept_starts = [srt_utils.cue_bounds(r[1])[0] for r in _hrows]
+check("removal did not disturb the surviving cues' start times",
+      _kept_starts == sorted(_kept_starts) and _kept_starts[0] == 1.0)
+
+# opt-out is honoured
+_prev_asr = config.load().asr
+srt_polish.CFG.asr = {"strip_hallucinations": False}
+_orows, _ostats = srt_polish.polish(WORK / "H1.srt", out_path=WORK / "H1.keep.srt",
+                                    verbose=False)
+check("strip_hallucinations:false keeps every cue",
+      _ostats["dropped_hallucination"] == 0 and len(_orows) == 8)
+srt_polish.CFG.asr = _prev_asr
+
 # === summary =================================================================
 print(f"\n{PASS} passed, {FAIL} failed")
 shutil.rmtree(TMP, ignore_errors=True)

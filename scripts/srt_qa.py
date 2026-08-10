@@ -11,8 +11,9 @@ fit to translate from?" before spending a worker pass on it.
 HARD (structural, blocks use): BOM; malformed blocks; numbering break; non-monotonic
 or inverted timestamps; empty cue; unbalanced <i>/<b>.
 SOFT (readability/ASR smells): CPS over target/hard; >max_lines; over-long line;
-sub-min duration; cue overlap; adjacent duplicate text (ASR loop); punctuation-only
-cue; runaway ALL-CAPS; suspicious leading/trailing spacing; long unsubtitled gap.
+sub-min duration; cue overlap; adjacent duplicate text (ASR loop); ASR boilerplate
+hallucination ("Thanks for watching!" and friends); punctuation-only cue; runaway
+ALL-CAPS; suspicious leading/trailing spacing; long unsubtitled gap.
 
   python srt_qa.py work/the-film.src.srt
   python srt_qa.py work/the-film.src.srt --top 40      # show more examples
@@ -23,6 +24,7 @@ import sys
 
 import config
 import srt_utils
+import asr_artifacts
 
 CFG = config.load()
 TAG = re.compile(r"</?([ib])>", re.I)
@@ -139,6 +141,20 @@ def qa(path, top=15, verbose=True):
         soft.append(f"cue {num}: {g/60:.1f} min with no subtitles before it "
                     "(scene without dialogue, or a dropout — spot-check)")
 
+    # --- ASR boilerplate hallucinations -------------------------------------
+    # Scattered across the runtime, so none of the adjacency-gated duplicate
+    # checks above can see them. Report EVERY whole-cue match, and say which ones
+    # recur often enough for srt_polish to be willing to delete them.
+    halluc_pats = asr_artifacts.patterns_from_config(CFG)
+    min_reps = asr_artifacts.min_repeats_from_config(CFG)
+    drop, matches, _counts = asr_artifacts.find(
+        [_plain(c) for c in cues], halluc_pats, min_reps)
+    for i in sorted(matches):
+        removable = " — recurs; srt_polish will remove it" if i in drop else \
+                    f" — below the x{min_reps} repeat threshold, left in place"
+        soft.append(f"cue {cues[i]['num']}: ASR boilerplate hallucination "
+                    f"{_plain(cues[i])!r}{removable}")
+
     stats = {
         "cues": len(cues),
         "runtime_min": (srt_utils.cue_bounds(cues[-1]["ts"])[1] / 60.0) if cues else 0,
@@ -149,6 +165,7 @@ def qa(path, top=15, verbose=True):
         "over_target_cps": n_over_target, "over_hard_cps": n_over_hard,
         "long_lines": n_long_line, "many_lines": n_many_lines,
         "short": n_short, "overlaps": n_overlap,
+        "halluc": len(matches), "halluc_removable": len(drop),
     }
     if verbose:
         _report(path, stats, hard, soft, top)
@@ -167,6 +184,9 @@ def _report(path, stats, hard, soft, top):
         print(f"   CPL  p90={stats['cpl_p90']:.0f} max={stats['cpl_max']:.0f} | "
               f"long lines {stats['long_lines']}, >max-lines {stats['many_lines']}")
         print(f"   timing: {stats['short']} sub-min-duration, {stats['overlaps']} overlaps")
+        if stats.get("halluc"):
+            print(f"   ASR boilerplate: {stats['halluc']} hallucinated cue(s), "
+                  f"{stats['halluc_removable']} removable by srt_polish")
     for x in hard[:top]:
         print("  HARD -", x)
     if len(hard) > top:
