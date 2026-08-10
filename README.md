@@ -66,12 +66,26 @@ The delivered sidecar lands next to the video as
 `extract.py` fails loud when a release ships only bitmap (PGS/VOBSUB) or
 foreign-language tracks. When OCR isn't an option either, transcribe the title's own
 source-language audio — it emits the **same** `work/<key>.src.srt` artifact, so every
-later stage is unchanged:
+later stage is unchanged.
+
+> **Exhaust extraction first — ASR is the last resort, not the convenient one.** A
+> distributor's own subtitles beat any transcript. Before falling back, check, in order:
+> 1. every subtitle stream in **every** copy of the title you hold (a REMUX usually
+>    carries the disc's English PGS even when a smaller re-encode dropped it);
+> 2. the *actual language of the text*, not the `language` tag — mislabelled tracks are
+>    common, so extract the track and look at it;
+> 3. burned-in (hardcoded) captions in the image — sample frames at timestamps where you
+>    know dialogue occurs, not at arbitrary points;
+> 4. an incomplete download is **not** a dead end, but check the bytes you actually have:
+>    a sparse file's *length* is pre-allocation, so it can read as many GB while holding
+>    almost nothing (`fsutil sparse queryrange` on Windows). Re-check it later rather than
+>    writing it off once.
 
 ```bash
-python scripts/transcribe.py the-film-2010            # -> work/the-film-2010.src.srt
-python scripts/srt_qa.py work/the-film-2010.src.srt   # structural + readability report
-python scripts/parse_source.py the-film-2010          # ...then the normal flow
+python scripts/transcribe.py the-film-2010              # -> work/the-film-2010.src.srt
+python scripts/srt_polish.py work/the-film-2010.src.srt # structural + timing cleanup
+python scripts/srt_qa.py work/the-film-2010.src.srt     # structural + readability report
+python scripts/parse_source.py the-film-2010            # ...then the normal flow
 ```
 On a 5.1/7.1 mix it isolates the **front-center channel** (where the dialogue lives)
 and evens out the level before recognition — on one action-film sample that lifted the
@@ -82,6 +96,31 @@ validator later enforces.
 
 > ⚠️ ASR timestamps are estimates, not a distributor's — they are the one part of the
 > pipeline that is **not** sacred. Review them (and the transcript) before delivery.
+
+### Filling the gaps a reference track exposes
+Whisper decodes long audio in 30-second windows, and a window dominated by score,
+screaming or overlapping speech can lose a segment the *same model* recovers when handed
+just that stretch. Any professionally cued track for the same title — even one in another
+language — is an excellent map of **where** those losses are:
+
+```bash
+python scripts/transcribe.py the-film-2010 --only-fill --fill-gaps /path/to/official.srt
+```
+This re-scans only the stretches the reference cues and the draft has nothing near, then
+merges in whatever it finds. On one title that moved content gaps from **10.7% → 1.7%** of
+the reference's cues.
+
+The reference supplies **timing only** — where dialogue occurs. None of its text is read,
+compared or copied, and every recovered word is transcribed from the title's own audio, so
+the draft stays an original transcript rather than a derivative of someone else's subtitle.
+
+> Comparing coverage against a reference is also the fastest way to catch a *systemic* ASR
+> problem: it is what exposed that a VAD pre-pass was silently discarding shouted dialogue.
+
+`srt_polish.py` fixes only structural and timing defects — it drops empty and
+punctuation-only cues, collapses genuine stutter loops (never repeats separated in time),
+re-wraps to the line budget, enforces minimum duration, and removes overlaps. It **never
+edits wording**: cues that need condensing are reported, not truncated.
 
 `srt_qa.py` complements `validate_srt.py`: the validator judges a *delivered target*
 against its source and the target-language guardrails, while `srt_qa.py` judges **any**
