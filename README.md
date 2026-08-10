@@ -23,6 +23,8 @@ scale, and **[docs/LEARNINGS.md](docs/LEARNINGS.md)** for the hard-won "why".
 - Python 3.9+ and `pip install -r requirements.txt` (PyYAML).
 - Access to LLM agents for translation + review (different models for worker vs reviewer).
 - For image-based (PGS/VOBSUB) subtitles: an OCR step first (e.g. Subtitle Edit / pgsrip).
+- Optional, only if a release has **no** usable source subtitles at all:
+  `pip install faster-whisper` (+ a CUDA GPU) for the ASR fallback below.
 
 ## Quickstart
 ```bash
@@ -60,6 +62,31 @@ The delivered sidecar lands next to the video as
 > `finalize_title` delivers a validated draft; after the review pass, re-running it
 > delivers the reviewed FINAL (both are gated; a sidecar is never a fragment).
 
+## No usable source subtitles? (ASR fallback)
+`extract.py` fails loud when a release ships only bitmap (PGS/VOBSUB) or
+foreign-language tracks. When OCR isn't an option either, transcribe the title's own
+source-language audio — it emits the **same** `work/<key>.src.srt` artifact, so every
+later stage is unchanged:
+
+```bash
+python scripts/transcribe.py the-film-2010            # -> work/the-film-2010.src.srt
+python scripts/srt_qa.py work/the-film-2010.src.srt   # structural + readability report
+python scripts/parse_source.py the-film-2010          # ...then the normal flow
+```
+On a 5.1/7.1 mix it isolates the **front-center channel** (where the dialogue lives)
+and evens out the level before recognition — on one action-film sample that lifted the
+word yield ~58% over a naive downmix — and falls back to the full downmix if a release
+turns out to carry a silent center. Cues are re-segmented from *word* timestamps under
+your `readability` budget, so the draft already obeys the CPS/CPL/line rules the
+validator later enforces.
+
+> ⚠️ ASR timestamps are estimates, not a distributor's — they are the one part of the
+> pipeline that is **not** sacred. Review them (and the transcript) before delivery.
+
+`srt_qa.py` complements `validate_srt.py`: the validator judges a *delivered target*
+against its source and the target-language guardrails, while `srt_qa.py` judges **any**
+SRT on its own terms — useful for an ASR draft or any incoming subtitle file.
+
 ## What you get / guarantees
 - **Timestamps are sacred** — reattached byte-for-byte; the builder re-parses its own
   output to prove it.
@@ -75,7 +102,7 @@ The delivered sidecar lands next to the video as
 
 ## Tests
 ```bash
-python tests/test_pipeline.py        # 34 self-tests of every integrity guarantee
+python tests/test_pipeline.py        # 68 self-tests of every integrity guarantee
 ```
 
 ## Repo layout
@@ -83,9 +110,9 @@ python tests/test_pipeline.py        # 34 self-tests of every integrity guarante
 config/      project.example.yaml + guardrails/es-419.yaml (reusable language pack)
 prompts/     worker.md, reviewer.md, gate_plan_review.md  (LLM templates)
 templates/   glossary.template.md
-scripts/     config, srt_utils, extract, parse_source, slice_ranges, normalize_batch,
-             autofix, build_srt, validate_srt, align_check, reconstruct, apply_patch,
-             finalize_title, shot, state_db
+scripts/     config, srt_utils, extract, transcribe, srt_qa, parse_source, slice_ranges,
+             normalize_batch, autofix, build_srt, validate_srt, align_check, reconstruct,
+             apply_patch, finalize_title, shot, state_db
 tests/       test_pipeline.py
 docs/        DESIGN.md, ORCHESTRATION.md, LEARNINGS.md
 ```

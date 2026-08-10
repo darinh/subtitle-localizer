@@ -4,6 +4,8 @@ work/
 
 # Per-project config & glossary (user-supplied; may contain spoilers/PII)
 config/project.yaml
+config/project.*.yaml
+!config/project.example.yaml
 **/glossary.md
 !templates/glossary.template.md
 

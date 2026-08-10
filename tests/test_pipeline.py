@@ -376,6 +376,157 @@ dest = MEDIA / "T01.es-419.srt"
 check("finalize delivered sidecar next to video", ok and dest.exists())
 check("delivered sidecar has no BOM", not dest.read_bytes().startswith(b"\xef\xbb\xbf"))
 
+# === 14. transcribe: ASR draft segmentation =================================
+print("[14] transcribe segmentation")
+import transcribe        # noqa: E402  (faster_whisper is imported lazily, not needed here)
+
+
+def _words(spec, t0=0.0, dur=0.30, gap=0.05):
+    """spec: list of (word) or (word, gap_before). Build word dicts with timings."""
+    out, t = [], t0
+    for item in spec:
+        w, g = item if isinstance(item, tuple) else (item, gap)
+        t += g
+        out.append({"word": w, "start": round(t, 3), "end": round(t + dur, 3)})
+        t += dur
+    return out
+
+
+_loop = transcribe._collapse_loops(_words(["no"] * 8))
+check("word-level ASR loop collapsed", 0 < len(_loop) < 8)
+check("collapsed loop keeps the word itself", _loop[0]["word"] == "no")
+_keep2 = transcribe._collapse_loops(_words(["no", "no"]))
+check("a natural double is NOT collapsed", len(_keep2) == 2)
+_phrase = transcribe._collapse_loops(_words(["get", "out"] * 6))
+check("phrase-level ASR loop collapsed", len(_phrase) < 12)
+
+_READ = {"max_cpl": 42, "max_lines": 2, "max_cps": 17, "min_duration": 0.7}
+# distinct words: a repeated token would be eaten by the loop collapser above and
+# would never reach the character-budget logic this is meant to exercise.
+_NATO = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel",
+         "india", "juliet", "kilo", "lima", "mike", "november", "oscar", "papa",
+         "quebec", "romeo", "sierra", "tango"]
+_long = transcribe.build_cues(_words(_NATO), _READ)
+check("no cue exceeds the character budget",
+      _long and all(len(c["text"]) <= 42 * 2 for c in _long))
+check("over-budget speech split into several cues", len(_long) > 1)
+check("segmentation loses no words",
+      " ".join(c["text"] for c in _long).split() == _NATO)
+
+_gapped = transcribe.build_cues(
+    _words([("Hello", 0.05), ("there", 0.05)]) + _words([("Later", 0.0)], t0=30.0), _READ)
+check("a long silence forces a cue boundary", len(_gapped) >= 2)
+
+_cues = transcribe.build_cues(_words(["one", "two", "three", "four", "five"]), _READ)
+check("cue timestamps are monotonic and non-overlapping",
+      all(_cues[i]["end"] <= _cues[i + 1]["start"] + 1e-6 for i in range(len(_cues) - 1)))
+check("every cue clears the minimum duration",
+      all((c["end"] - c["start"]) >= 0.7 - 1e-6 for c in _cues))
+check("no cue starts before zero", all(c["start"] >= 0 for c in _cues))
+check("punctuation-only fragments dropped",
+      transcribe.build_cues(_words(["...", "?!"]), _READ) == [])
+check("ts formatter pads to SRT form",
+      transcribe._fmt_ts(3671.5, 3672.25) == "01:01:11,500 --> 01:01:12,250")
+check("ts formatter carries a 999.6ms rounding into the next second",
+      transcribe._fmt_ts(0.9999, 1.5).startswith("00:00:01,000"))
+
+# the ASR draft must survive the pipeline's own strict parser + parse_source
+_asr_rows = [(i, transcribe._fmt_ts(c["start"], c["end"]),
+              srt_utils.wrap_cue(c["text"], width=42)) for i, c in enumerate(_cues, 1)]
+srt_utils.write_srt(_asr_rows, WORK / "ASR.src.srt")
+_reparsed, _probs = srt_utils.parse_srt((WORK / "ASR.src.srt").read_text(encoding="utf-8"),
+                                        strict=True)
+check("ASR draft re-parses cleanly under the strict parser",
+      len(_reparsed) == len(_asr_rows) and not _probs)
+
+# === 15. srt_qa: source-side structural + readability QA =====================
+print("[15] srt_qa")
+import srt_qa            # noqa: E402
+
+_CLEAN = ("1\n00:00:01,000 --> 00:00:03,000\nHello there.\n\n"
+          "2\n00:00:03,500 --> 00:00:06,000\nGood to see you.\n")
+(WORK / "QA1.srt").write_text(_CLEAN, encoding="utf-8")
+_h, _s = srt_qa.qa(WORK / "QA1.srt", verbose=False)
+check("clean SRT passes QA with no HARD findings", _h == 0)
+
+(WORK / "QA2.srt").write_text("\ufeff" + _CLEAN, encoding="utf-8")
+check("BOM is a HARD finding", srt_qa.qa(WORK / "QA2.srt", verbose=False)[0] > 0)
+
+(WORK / "QA3.srt").write_text(
+    "1\n00:00:01,000 --> 00:00:03,000\n<i>Unclosed.\n", encoding="utf-8")
+check("unbalanced <i> is a HARD finding", srt_qa.qa(WORK / "QA3.srt", verbose=False)[0] > 0)
+
+(WORK / "QA4.srt").write_text(
+    "1\n00:00:03,000 --> 00:00:01,000\nBackwards.\n", encoding="utf-8")
+check("inverted timestamps are a HARD finding", srt_qa.qa(WORK / "QA4.srt", verbose=False)[0] > 0)
+
+(WORK / "QA5.srt").write_text(
+    "1\n00:00:01,000 --> 00:00:03,000\nSame line.\n\n"
+    "2\n00:00:03,500 --> 00:00:06,000\nSame line.\n", encoding="utf-8")
+check("adjacent duplicate text is a soft ASR-loop finding",
+      srt_qa.qa(WORK / "QA5.srt", verbose=False)[1] > 0)
+
+(WORK / "QA6.srt").write_text(
+    "2\n00:00:01,000 --> 00:00:03,000\nMisnumbered.\n", encoding="utf-8")
+check("numbering break is a HARD finding", srt_qa.qa(WORK / "QA6.srt", verbose=False)[0] > 0)
+
+# === 16. srt_polish: deterministic clean-up of a source SRT ==================
+print("[16] srt_polish")
+import srt_polish        # noqa: E402
+
+(WORK / "P1.srt").write_text(
+    "1\n00:00:01,000 --> 00:00:03,000\nSame line.\n\n"
+    "2\n00:00:03,100 --> 00:00:05,000\nSame line.\n\n"
+    "3\n00:00:05,100 --> 00:00:07,000\nA different line.\n", encoding="utf-8")
+_rows, _st = srt_polish.polish(WORK / "P1.srt", out_path=WORK / "P1.out.srt", verbose=False)
+check("consecutive identical cues collapsed", len(_rows) == 2 and _st["collapsed_loops"] == 1)
+check("collapsed cue spans the whole run",
+      _rows[0][1].endswith("00:00:05,000"))
+
+(WORK / "P2.srt").write_text(
+    "1\n00:00:01,000 --> 00:00:03,000\n...\n\n"
+    "2\n00:00:03,100 --> 00:00:05,000\nReal dialogue.\n", encoding="utf-8")
+_rows, _st = srt_polish.polish(WORK / "P2.srt", out_path=WORK / "P2.out.srt", verbose=False)
+check("punctuation-only cue dropped", len(_rows) == 1 and _st["dropped_empty"] == 1)
+check("surviving cues are renumbered from 1", _rows[0][0] == 1)
+
+_LONG = "This is a single very long spoken line that must be wrapped onto two lines."
+(WORK / "P3.srt").write_text(
+    f"1\n00:00:01,000 --> 00:00:06,000\n{_LONG}\n", encoding="utf-8")
+_rows, _ = srt_polish.polish(WORK / "P3.srt", out_path=WORK / "P3.out.srt", verbose=False)
+check("over-long line re-wrapped within max_cpl",
+      all(len(l) <= 42 for l in _rows[0][2].split("\n")))
+check("re-wrapping preserves the words", _rows[0][2].replace("\n", " ") == _LONG)
+
+# a two-speaker dialogue cue must keep its "- " layout
+(WORK / "P4.srt").write_text(
+    "1\n00:00:01,000 --> 00:00:04,000\n- Yes.\n- No.\n", encoding="utf-8")
+_rows, _ = srt_polish.polish(WORK / "P4.srt", out_path=WORK / "P4.out.srt", verbose=False)
+check("two-speaker dialogue layout preserved", _rows[0][2] == "- Yes.\n- No.")
+
+# overlapping + too-short cues get fixed without reordering
+(WORK / "P5.srt").write_text(
+    "1\n00:00:01,000 --> 00:00:05,000\nFirst.\n\n"
+    "2\n00:00:03,000 --> 00:00:03,200\nSecond.\n\n"
+    "3\n00:00:20,000 --> 00:00:20,100\nThird.\n", encoding="utf-8")
+_rows, _st = srt_polish.polish(WORK / "P5.srt", out_path=WORK / "P5.out.srt", verbose=False)
+_b = [srt_utils.cue_bounds(ts) for _, ts, _ in _rows]
+check("overlap removed", all(_b[i][1] <= _b[i + 1][0] + 1e-6 for i in range(len(_b) - 1)))
+check("cue order preserved", _b == sorted(_b))
+check("trailing short cue extended to min duration", (_b[-1][1] - _b[-1][0]) >= 0.7 - 1e-6)
+check("a short cue boxed in by the next one is NOT extended past it",
+      _b[1][1] <= _b[2][0] + 1e-6)
+
+# polished output must survive the strict parser and QA cleanly
+_h, _s = srt_qa.qa(WORK / "P5.out.srt", verbose=False)
+check("polished output passes QA with no HARD findings", _h == 0)
+
+(WORK / "BAD.srt").write_text(
+    "00:00:01,000 --> 00:00:02,000\nMissing its index line.\n\n"
+    "2\n00:00:03,000 --> 00:00:04,000\nFine.\n", encoding="utf-8")
+expect_raises("polish refuses a malformed SRT rather than guessing",
+              lambda: srt_polish.polish(WORK / "BAD.srt", verbose=False))
+
 # === summary =================================================================
 print(f"\n{PASS} passed, {FAIL} failed")
 shutil.rmtree(TMP, ignore_errors=True)
