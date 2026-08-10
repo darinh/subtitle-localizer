@@ -428,17 +428,19 @@ def fill_gaps(key, reference, model_name=DEFAULT_MODEL, device="auto", audio=Non
             for c, (s, e) in zip(draft, have)]
     rows += [{"start": c["start"], "end": c["end"], "text": c["text"]} for c in added]
     rows.sort(key=lambda x: (x["start"], x["end"]))
-    # A gap window is exactly the kind of stretch (score, screaming, near-silence)
-    # that provokes boilerplate, so re-run the whole-file check over the MERGED
-    # track — the recurrence count has to see the finished artifact, not one window.
-    before_merge = len(rows)
-    rows = _strip_hallucinations(rows, "the merged draft")
-    n_halluc = before_merge - len(rows)
     for i, it in enumerate(rows):           # keep the merged track non-overlapping
         if i and it["start"] < rows[i - 1]["end"]:
             it["start"] = rows[i - 1]["end"] + 0.001
         if it["end"] <= it["start"]:
             it["end"] = it["start"] + 0.05
+    # A gap window is exactly the kind of stretch (score, screaming, near-silence)
+    # that provokes boilerplate, so re-run the whole-file check over the MERGED
+    # track — the recurrence count has to see the finished artifact, not one window.
+    # It runs AFTER the de-overlap pass so no surviving cue's timing depends on
+    # whether a hallucination happened to sit next to it.
+    before_merge = len(rows)
+    rows = _strip_hallucinations(rows, "the merged draft")
+    n_halluc = before_merge - len(rows)
     out = [(i, srt_utils.format_span(it["start"], it["end"]),
             srt_utils.wrap_cue(it["text"], width=max_cpl))
            for i, it in enumerate(rows, 1)]
@@ -559,11 +561,9 @@ def _strip_hallucinations(cues, label):
     if not drop:
         return cues
     print(f"   dropped {len(drop)} ASR boilerplate hallucination(s) from {label}:")
-    for i in sorted(drop)[:10]:
+    for i in sorted(drop):
         print(f"      {srt_utils.format_ts(cues[i]['start'])}  "
               f"{asr_artifacts.plain(cues[i]['text'])!r}")
-    if len(drop) > 10:
-        print(f"      ... +{len(drop)-10} more")
     return [c for i, c in enumerate(cues) if i not in drop]
 
 

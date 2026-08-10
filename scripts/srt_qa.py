@@ -147,13 +147,18 @@ def qa(path, top=15, verbose=True):
     # recur often enough for srt_polish to be willing to delete them.
     halluc_pats = asr_artifacts.patterns_from_config(CFG)
     min_reps = asr_artifacts.min_repeats_from_config(CFG)
+    strip_on = asr_artifacts.enabled_for_config(CFG)
     drop, matches, _counts = asr_artifacts.find(
         [_plain(c) for c in cues], halluc_pats, min_reps)
     for i in sorted(matches):
-        removable = " — recurs; srt_polish will remove it" if i in drop else \
-                    f" — below the x{min_reps} repeat threshold, left in place"
+        if i not in drop:
+            note = f" — below the x{min_reps} repeat threshold, left in place"
+        elif strip_on:
+            note = " — recurs; srt_polish will remove it"
+        else:
+            note = " — recurs, but asr.strip_hallucinations is off, so nothing removes it"
         soft.append(f"cue {cues[i]['num']}: ASR boilerplate hallucination "
-                    f"{_plain(cues[i])!r}{removable}")
+                    f"{_plain(cues[i])!r}{note}")
 
     stats = {
         "cues": len(cues),

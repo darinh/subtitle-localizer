@@ -73,23 +73,20 @@ def polish(path, out_path=None, dry_run=False, verbose=True):
         items.append({"start": st, "end": en, "text": text})
     items.sort(key=lambda x: (x["start"], x["end"]))
 
-    # --- 2. drop ASR boilerplate hallucinations -----------------------------
+    # --- 2. flag ASR boilerplate hallucinations -----------------------------
     # A whole-cue YouTube outro emitted over music or screaming. These are spread
     # across the runtime, so the adjacency-gated collapse in step 3 cannot see
-    # them. Removal needs the recurrence threshold (asr_artifacts explains why),
-    # and it runs BEFORE the collapse so a removed cue cannot first be merged
-    # into a neighbour and stretch it across the gap.
-    removed_halluc = []
+    # them. They are only FLAGGED here and removed in step 6, after every timing
+    # decision has been made: a deleted cue must still act as a blocker, or its
+    # neighbour would collapse across the hole it left or stretch into it, and a
+    # surviving cue's timing would then depend on what was deleted next to it.
     if asr_artifacts.enabled_for_config(CFG):
         drop, _matches, _counts = asr_artifacts.find(
             [it["text"] for it in items],
             asr_artifacts.patterns_from_config(CFG),
             asr_artifacts.min_repeats_from_config(CFG))
-        if drop:
-            removed_halluc = [(items[i]["start"], asr_artifacts.plain(items[i]["text"]))
-                              for i in sorted(drop)]
-            items = [it for i, it in enumerate(items) if i not in drop]
-            stats["dropped_hallucination"] = len(drop)
+        for i in drop:
+            items[i]["halluc"] = True
 
     # --- 3. collapse consecutive identical cues (ASR stutter loop) ----------
     # Only when they are ADJACENT IN TIME. A line genuinely repeated later in the
@@ -113,6 +110,8 @@ def polish(path, out_path=None, dry_run=False, verbose=True):
         if it["text"] != before:
             stats["rewrapped"] += 1
         body = [l for l in it["text"].split("\n") if l.strip()]
+        if it.get("halluc"):
+            continue          # about to be deleted: never ask a human to review it
         if len(body) > max_lines or any(len(re.sub(r"</?[ib]>", "", l)) > max_cpl for l in body):
             over_budget.append(it)
 
@@ -139,6 +138,15 @@ def polish(path, out_path=None, dry_run=False, verbose=True):
             stats["cps_relieved"] += 1
     items = [it for it in items if it["end"] > it["start"]]
 
+    # --- 6. now drop the flagged hallucinations ------------------------------
+    # Last, so that every timing decision above was made with them still in place
+    # and no surviving cue's timing depends on what was removed beside it.
+    removed_halluc = [(it["start"], asr_artifacts.plain(it["text"]))
+                      for it in items if it.get("halluc")]
+    if removed_halluc:
+        items = [it for it in items if not it.get("halluc")]
+        stats["dropped_hallucination"] = len(removed_halluc)
+
     rows = [(i, _fmt(it["start"], it["end"]), it["text"]) for i, it in enumerate(items, 1)]
 
     if verbose:
@@ -148,12 +156,10 @@ def polish(path, out_path=None, dry_run=False, verbose=True):
             if v:
                 print(f"   {k}: {v}")
         if removed_halluc:
-            # a deletion is never silent: name every cue that was removed
+            # a deletion is never silent: name EVERY cue that was removed, uncapped
             print(f"   removed {len(removed_halluc)} ASR boilerplate hallucination(s):")
-            for st, txt in removed_halluc[:15]:
+            for st, txt in removed_halluc:
                 print(f"      {srt_utils.format_ts(st)}  {txt!r}")
-            if len(removed_halluc) > 15:
-                print(f"      ... +{len(removed_halluc)-15} more")
         if over_budget:
             print(f"   REVIEW {len(over_budget)} cue(s) still over the readability budget "
                   f"(> {max_lines}x{max_cpl}) — these need condensing, not re-wrapping:")

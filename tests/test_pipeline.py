@@ -605,22 +605,41 @@ _pats = asr_artifacts.compile_patterns()
 # --- detection: the recognizable boilerplate families ---
 for _t in ("Thanks for watching!", "Thank you for watching.",
            "thanks for watching", "<i>Thanks for watching!</i>",
-           "Thanks for watching this video!", "Please subscribe to my channel",
-           "Don't forget to like and subscribe", "Subtitles by Amara.org",
-           "Subtitles: J. Doe", "See you in the next video!",
-           "Visit www.example.com", "\u00a9 2010 Some Studio"):
+           "(Thanks for watching!)", "Thanks for watching this video!",
+           "Please subscribe to my channel", "Don't forget to subscribe",
+           "Like and subscribe", "Subtitles by Amara.org", "Subtitles: J. Doe",
+           "See you in the next video!", "Visit www.example.com",
+           "\u00a9 2010 Some Studio", "(c) 2010 Some Studio"):
     check(f"detected boilerplate {_t!r}", asr_artifacts.match_family(_t, _pats) is not None)
 
 # --- the dangerous direction: real dialogue must survive ---
-# Each of these CONTAINS boilerplate wording but is a real line; deleting one is
-# the failure this whole feature must not cause.
-for _t in ("Thanks for watching my back out there.",
-           "He said thanks for watching, then he shot him.",
-           "I don't know.", "Help!", "Thanks.", "Watching. Just watching.",
-           "Subscribe to the theory that we're all doomed.",
-           "Thank you.", "Thanks for the ride.",
-           "The titles by that director are all garbage."):
+# Every string here was deleted by an earlier, looser pattern set that three
+# independent code reviews broke. They are the regression suite for the feature:
+# if a pattern is ever widened, one of these fails before it can reach a delivery.
+_REAL_DIALOGUE = [
+    "Thanks for watching my back out there.",
+    "He said thanks for watching, then he shot him.",
+    "I don't know.", "Help!", "Thanks.", "Thank you.", "Thanks for the ride.",
+    "Watching. Just watching.",
+    "Subscribe.", "Subscribe to the theory that we're all doomed.",
+    "See you next time.", "See you next week.", "I'll see you next time.",
+    "See you guys next week.",
+    "Titles by that director are all garbage.",
+    "Subtitles by themselves do not tell the whole story.",
+    "Translations by machines never sound right.",
+    "Translations from the Greek are hard.",
+    "Copyright law will not save you",
+    "Copyright is a complicated subject in law.",
+    "Thanks for listening, see you at dinner",
+    "Go to www.police.gov to report it.",
+]
+for _t in _REAL_DIALOGUE:
     check(f"kept real dialogue {_t!r}", asr_artifacts.match_family(_t, _pats) is None)
+
+# ...and they must survive even when REPEATED, since recurrence is what unlocks
+# deletion. Three different real lines must never delete each other.
+_drop_r, _, _ = asr_artifacts.find(_REAL_DIALOGUE * 3, _pats, min_repeats=3)
+check("real dialogue repeated 3x is still never deleted", _drop_r == set())
 
 # --- the repeat threshold ---
 _drop, _matches, _counts = asr_artifacts.find(
@@ -629,21 +648,51 @@ check("a single boilerplate utterance is NOT deleted", _drop == set())
 check("...but it is still reported", set(_matches) == {0})
 
 _drop2, _, _ = asr_artifacts.find(
-    ["Thanks for watching!", "Hi.", "Thank you for watching.", "Bye.",
-     "thanks for watching"], _pats, min_repeats=3)
-check("a recurring family IS deleted (counted per family, not per exact string)",
-      _drop2 == {0, 2, 4})
+    ["Thanks for watching!", "Hi.", "thanks for watching", "Bye.",
+     "Thanks for watching."], _pats, min_repeats=3)
+check("a recurring utterance IS deleted (case/punctuation-blind)", _drop2 == {0, 2, 4})
+
+# counting is per EXACT text, not per pattern family: three DIFFERENT boilerplate
+# lines that share one pattern must not pool their counts and delete each other
+_drop_p, _matches_p, _ = asr_artifacts.find(
+    ["Please subscribe to my channel", "Don't forget to subscribe",
+     "Like and subscribe"], _pats, min_repeats=3)
+check("distinct utterances do not pool counts across a pattern family",
+      _drop_p == set() and len(_matches_p) == 3)
 
 _drop3, _, _ = asr_artifacts.find(["Please subscribe"] * 3, _pats, min_repeats=4)
 check("min_repeats is honoured", _drop3 == set())
 
+# --- malformed config must fail loud, never delete something odd -------------
+expect_raises("a bare string for extra patterns is rejected",
+              lambda: asr_artifacts.compile_patterns("Thanks for watching"))
+expect_raises("a non-string extra pattern is rejected",
+              lambda: asr_artifacts.compile_patterns(["ok", 7]))
+expect_raises("an invalid regex is rejected with a clear error",
+              lambda: asr_artifacts.compile_patterns(["(unclosed"]))
+
+
+class _FakeCfg:
+    def __init__(self, asr):
+        self.asr = asr
+
+
+expect_raises("a non-mapping asr: section is rejected",
+              lambda: asr_artifacts.patterns_from_config(_FakeCfg(True)))
+expect_raises("a non-integer min_repeats is rejected",
+              lambda: asr_artifacts.min_repeats_from_config(_FakeCfg(
+                  {"hallucination_min_repeats": "three"})))
+check("a missing asr: section falls back to the defaults",
+      asr_artifacts.enabled_for_config(_FakeCfg(None)) is True
+      and asr_artifacts.min_repeats_from_config(_FakeCfg(None)) == 3)
+
 # --- end to end through polish: the artifact loses only the hallucinations ---
+_H_TEXTS = ["Get in the boat!", "Thanks for watching!", "It's coming up fast.",
+            "thanks for watching", "Thanks for watching my back out there.",
+            "Swim!", "Thanks for watching.", "Behind you!"]
 _H_SRT = "".join(
     f"{i}\n00:{i//60:02d}:{i%60:02d},000 --> 00:{i//60:02d}:{i%60:02d},900\n{t}\n\n"
-    for i, t in enumerate(
-        ["Get in the boat!", "Thanks for watching!", "It's coming up fast.",
-         "Thank you for watching.", "Thanks for watching my back out there.",
-         "Swim!", "Thanks for watching!", "Behind you!"], start=1))
+    for i, t in enumerate(_H_TEXTS, start=1))
 (WORK / "H1.srt").write_text(_H_SRT, encoding="utf-8")
 _hrows, _hstats = srt_polish.polish(WORK / "H1.srt", out_path=WORK / "H1.out.srt",
                                     verbose=False)
@@ -659,14 +708,47 @@ check("surviving cues renumbered from 1",
 check("polished hallucination-free output re-parses and passes QA",
       srt_qa.qa(WORK / "H1.out.srt", verbose=False)[0] == 0)
 
-# QA must SEE them before polish removes them, and say so
+# QA must SEE them before polish removes them, and say so IN the findings
 _qh, _qs = srt_qa.qa(WORK / "H1.srt", verbose=False)
-check("QA reports hallucinations as soft findings, not HARD", _qh == 0)
+check("QA reports hallucinations as soft findings, not HARD", _qh == 0 and _qs >= 3)
+_qbuf = io.StringIO()
+with redirect_stdout(_qbuf):
+    srt_qa.qa(WORK / "H1.srt", top=50)
+check("QA names the hallucinated cues in its report",
+      _qbuf.getvalue().count("ASR boilerplate hallucination") == 3)
 
-# a deleted cue must never take a real neighbour's timing with it
-_kept_starts = [srt_utils.cue_bounds(r[1])[0] for r in _hrows]
-check("removal did not disturb the surviving cues' start times",
-      _kept_starts == sorted(_kept_starts) and _kept_starts[0] == 1.0)
+# A deletion must not re-time what survives. The precise invariant is not "same as
+# the input" (polish legitimately adjusts timing), it is "same as polishing the very
+# same file with removal turned OFF" — removal must change WHICH cues are present
+# and nothing else.
+srt_polish.CFG.asr = {"strip_hallucinations": False}
+_norows, _ = srt_polish.polish(WORK / "H1.srt", out_path=WORK / "H1.nostrip.srt",
+                               verbose=False)
+srt_polish.CFG.asr = {"strip_hallucinations": True}
+_expect = [(ts, tx) for _n, ts, tx in _norows
+           if asr_artifacts.match_family(tx, _pats) is None]
+check("removal changes which cues survive and nothing else "
+      "(timing identical to a no-removal polish)",
+      [(ts, tx) for _n, ts, tx in _hrows] == _expect)
+check("...and it really did remove something", len(_norows) - len(_hrows) == 3)
+
+# a hallucination between two identical cues must not let them collapse together
+_C_SRT = ("1\n00:00:01,000 --> 00:00:01,900\nGo!\n\n"
+          "2\n00:00:02,000 --> 00:00:02,900\nThanks for watching!\n\n"
+          "3\n00:00:03,000 --> 00:00:03,900\nGo!\n\n"
+          "4\n00:00:04,000 --> 00:00:04,900\nThanks for watching!\n\n"
+          "5\n00:00:05,000 --> 00:00:05,900\nRun!\n\n"
+          "6\n00:00:06,000 --> 00:00:06,900\nThanks for watching!\n")
+(WORK / "H2.srt").write_text(_C_SRT, encoding="utf-8")
+_crows, _cstats = srt_polish.polish(WORK / "H2.srt", out_path=WORK / "H2.out.srt",
+                                    verbose=False)
+check("a removed cue still blocks the two cues around it from collapsing",
+      _cstats["collapsed_loops"] == 0 and len(_crows) == 3)
+check("the twice-repeated real cue survived both times",
+      [r[2] for r in _crows] == ["Go!", "Go!", "Run!"])
+check("the blocked pair kept their original timestamps",
+      [r[1] for r in _crows[:2]] == ["00:00:01,000 --> 00:00:01,900",
+                                     "00:00:03,000 --> 00:00:03,900"])
 
 # opt-out is honoured
 _prev_asr = config.load().asr
