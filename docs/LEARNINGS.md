@@ -37,6 +37,18 @@ before changing anything. None reference a specific title — they generalize.
 10. **UTF-8 with NO BOM.** A BOM corrupts the first cue in many players — and a tool
     round-trip (an editor re-saving a work file) can RE-introduce one, so self-heal it in
     the normalizer, don't just read with utf-8-sig.
+10b. **Do not assume an INCOMING subtitle is UTF-8.** Downloaded es/fr/pt sidecars are
+    routinely cp1252/Latin-1. `encoding="utf-8"` raises before the first cue;
+    `errors="replace"` is worse, silently turning every accent into U+FFFD so the
+    corruption looks like the source's. Decode by trying UTF-8 → cp1252 → Latin-1 and
+    REPORT which was used. Note the viewer-facing symptom: a mis-encoded sidecar looks
+    "wrong" on screen, and that is easily reported as (and mistaken for) a *timing*
+    problem — measure the sync before re-timing anything.
+10c. **Fix only the defect you found.** A full clean-up pass over a distributor's
+    subtitle whose sole fault was its encoding also reflowed 400 line breaks and
+    extended 26 cue ends. Line breaks in a professional subtitle are deliberate and its
+    timings are not yours to nudge, so a narrow `--reencode-only` mode that asserts
+    byte-identical text and timings is the correct tool.
 11. **Centralize SRT parsing; make it fail loud.** A naive `split("\n\n")` silently drops
     any cue containing an internal blank line — split only at a blank line FOLLOWED BY an
     index+timestamp header, and cross-check header-count == parsed-count. One parser

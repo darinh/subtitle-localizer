@@ -782,6 +782,81 @@ check("strip_hallucinations:false keeps every cue",
       _ostats["dropped_hallucination"] == 0 and len(_orows) == 8)
 srt_polish.CFG.asr = _prev_asr
 
+print("[18] non-UTF-8 subtitles (Latin-1 sidecars)")
+# A downloaded Spanish/French sidecar is very often cp1252. Reading it as UTF-8
+# raises before a single cue is parsed; reading it with errors="replace" silently
+# destroys every accented character. Both were real failures on a real file.
+_ES_TEXT = ("1\n00:00:01,000 --> 00:00:03,000\nS\u00ed que suena ra\u00f1o.\n\n"
+            "2\n00:00:04,000 --> 00:00:06,000\n\u00bfQu\u00e9 a\u00f1os?\n")
+(WORK / "ES.srt").write_bytes(_ES_TEXT.encode("cp1252"))
+_txt, _enc = srt_utils.read_text(WORK / "ES.srt")
+check("a cp1252 sidecar is decoded, not rejected", _enc == "cp1252")
+check("...and its accented characters survive intact", _txt == _ES_TEXT)
+check("no U+FFFD replacement characters were introduced", "\ufffd" not in _txt)
+
+(WORK / "UTF.srt").write_text(_ES_TEXT, encoding="utf-8")
+check("a real UTF-8 file is reported as utf-8",
+      srt_utils.read_text(WORK / "UTF.srt")[1] == "utf-8")
+(WORK / "ASCII.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\nPlain.\n",
+                                encoding="utf-8")
+check("pure ASCII is utf-8, so the check never fires spuriously",
+      srt_utils.read_text(WORK / "ASCII.srt")[1] == "utf-8")
+(WORK / "BOM2.srt").write_bytes(b"\xef\xbb\xbf" + _ES_TEXT.encode("utf-8"))
+_btxt, _benc = srt_utils.read_text(WORK / "BOM2.srt")
+check("a BOM is preserved for the auditor rather than silently eaten",
+      _benc == "utf-8" and _btxt.startswith(srt_utils.BOM))
+
+# QA must call it out as HARD: it corrupts every accented glyph on screen
+_eh, _es = srt_qa.qa(WORK / "ES.srt", verbose=False)
+check("QA flags a non-UTF-8 subtitle as HARD", _eh >= 1)
+_qbuf2 = io.StringIO()
+with redirect_stdout(_qbuf2):
+    srt_qa.qa(WORK / "ES.srt", top=20)
+check("QA names the actual encoding", "cp1252" in _qbuf2.getvalue())
+check("QA does not flag an equivalent UTF-8 file",
+      srt_qa.qa(WORK / "UTF.srt", verbose=False)[0] == 0)
+
+# polish converts it, and that is the whole fix for such a file
+srt_polish.polish(WORK / "ES.srt", out_path=WORK / "ES.out.srt", verbose=False)
+_otxt, _oenc = srt_utils.read_text(WORK / "ES.out.srt")
+check("polish rewrote the sidecar as UTF-8", _oenc == "utf-8")
+check("polish did not corrupt the accented characters",
+      "S\u00ed" in _otxt and "\u00bfQu\u00e9 a\u00f1os?" in _otxt
+      and "\ufffd" not in _otxt)
+check("the converted file has no BOM", not _otxt.startswith(srt_utils.BOM))
+check("the converted file now passes QA cleanly",
+      srt_qa.qa(WORK / "ES.out.srt", verbose=False)[0] == 0)
+_ecues, _ = srt_utils.parse_srt(_otxt, strict=True)
+_scues, _ = srt_utils.parse_srt(_ES_TEXT, strict=True)
+check("conversion preserved every cue and its timing",
+      [c["ts"] for c in _ecues] == [c["ts"] for c in _scues])
+
+# --reencode-only must change the bytes and NOTHING else: a distributor's line
+# breaks are often deliberate and its timings are not ours to nudge.
+_WRAPPY = ("1\n00:00:01,000 --> 00:00:03,000\nUna l\u00ednea corta\ny otra corta\n\n"
+           "2\n00:00:03,500 --> 00:00:03,900\n\u00a1R\u00e1pido!\n\n"
+           "3\n00:00:05,000 --> 00:00:07,000\n\u00bfQu\u00e9 a\u00f1os?\n")
+(WORK / "RE.srt").write_bytes(_WRAPPY.encode("cp1252"))
+_rrows, _ = srt_polish.polish(WORK / "RE.srt", out_path=WORK / "RE.out.srt",
+                              verbose=False, reencode_only=True)
+_rtxt, _renc = srt_utils.read_text(WORK / "RE.out.srt")
+_rin, _ = srt_utils.parse_srt(_WRAPPY, strict=True)
+_rout, _ = srt_utils.parse_srt(_rtxt, strict=True)
+check("--reencode-only produced UTF-8", _renc == "utf-8")
+check("--reencode-only kept every timestamp",
+      [c["ts"] for c in _rout] == [c["ts"] for c in _rin])
+check("--reencode-only kept every line break",
+      [c["text"] for c in _rout] == [c["text"] for c in _rin])
+check("--reencode-only kept the cue count and numbering",
+      [c["num"] for c in _rout] == [c["num"] for c in _rin])
+check("--reencode-only fixed the accented characters",
+      "\u00a1R\u00e1pido!" in _rtxt and "\u00bfQu\u00e9 a\u00f1os?" in _rtxt)
+# the full pass on the same input SHOULD reflow/retime - proving the modes differ
+_frows, _fstats = srt_polish.polish(WORK / "RE.srt", out_path=WORK / "RE.full.srt",
+                                    verbose=False)
+check("...whereas the full polish does reflow or retime it",
+      _fstats["rewrapped"] + _fstats["extended_short"] + _fstats["cps_relieved"] > 0)
+
 # === summary =================================================================
 print(f"\n{PASS} passed, {FAIL} failed")
 shutil.rmtree(TMP, ignore_errors=True)

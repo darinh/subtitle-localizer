@@ -60,7 +60,13 @@ def parse(key):
     srt_path = WORK / f"{key}.src.srt"
     if not srt_path.exists():
         raise SystemExit(f"FAIL: {srt_path} not found (run extract.py first)")
-    cues, problems = srt_utils.parse_srt(open(srt_path, encoding="utf-8").read(), strict=True)
+    # the source SRT can come from an OCR pass or a downloaded sidecar, so it is not
+    # necessarily UTF-8; read_text reports what it actually was
+    raw, encoding = srt_utils.read_text(srt_path)
+    if encoding != "utf-8":
+        print(f"   NOTE {srt_path.name} is {encoding}, not UTF-8 — decoded as "
+              f"{encoding}; the parsed JSON is written as UTF-8")
+    cues, problems = srt_utils.parse_srt(raw, strict=True)
     out = []
     for c in cues:
         textlines = c["text"]

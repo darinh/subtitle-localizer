@@ -22,6 +22,7 @@ condensation, which is a judgement call, so they are reported for review instead
   python srt_polish.py work/the-film.src.srt              # in place (writes .bak)
   python srt_polish.py work/the-film.src.srt -o out.srt
   python srt_polish.py work/the-film.src.srt --dry-run
+  python srt_polish.py downloaded.es.srt --reencode-only  # ONLY fix Latin-1 bytes
 """
 import os
 import re
@@ -42,8 +43,8 @@ def _norm(s):
     return re.sub(r"[\W_]+", " ", s.lower()).strip()
 
 
-def polish(path, out_path=None, dry_run=False, verbose=True):
-    raw = open(path, encoding="utf-8").read()
+def polish(path, out_path=None, dry_run=False, verbose=True, reencode_only=False):
+    raw, encoding = srt_utils.read_text(path)
     cues, problems = srt_utils.parse_srt(raw, strict=False)
     if problems:
         raise SystemExit(f"FAIL: {os.path.basename(str(path))} has {len(problems)} malformed "
@@ -61,6 +62,42 @@ def polish(path, out_path=None, dry_run=False, verbose=True):
              "rewrapped": 0, "extended_short": 0, "cps_relieved": 0,
              "overlaps_fixed": 0}
     over_budget = []
+    # write_srt always emits UTF-8 without a BOM, so this pass converts a
+    # cp1252/Latin-1 sidecar — the single most common defect in a downloaded
+    # Spanish or French subtitle.
+    reencoded = encoding != "utf-8"
+
+    if reencode_only:
+        # Surgical mode: change the ENCODING and nothing else. When a sidecar's
+        # only fault is its bytes, reflowing its line breaks and nudging its cue
+        # ends is unwanted churn — line breaks in a distributor's subtitle are
+        # often deliberate, and the timing is not ours to adjust.
+        rows = [(c["num"], c["ts"], "\n".join(c["text"])) for c in cues]
+        if verbose:
+            name = os.path.basename(str(path))
+            print(f"== re-encode {name}: {len(rows)} cues ==")
+            print(f"   {encoding} -> UTF-8 (no BOM)"
+                  if reencoded else "   already UTF-8; nothing to do")
+            if dry_run:
+                print("   (dry run — nothing written)")
+        if dry_run:
+            return rows, stats
+        dst = out_path or path
+        if str(dst) == str(path):
+            shutil.copyfile(path, str(path) + ".bak")
+        srt_utils.write_srt(rows, dst)
+        after, probs = srt_utils.parse_srt(
+            open(dst, encoding="utf-8").read(), strict=True)
+        # prove nothing but the encoding moved
+        if probs or len(after) != len(cues) \
+                or [c["ts"] for c in after] != [c["ts"] for c in cues] \
+                or [c["text"] for c in after] != [c["text"] for c in cues]:
+            raise SystemExit(f"FAIL: re-encode altered {os.path.basename(str(dst))} "
+                             "beyond its encoding — refusing to leave it in place")
+        if verbose:
+            print(f"   wrote {os.path.basename(str(dst))} "
+                  f"({len(after)} cues, timings and text byte-identical)")
+        return rows, stats
 
     # --- 1. load into a working list, dropping empties -----------------------
     items = []
@@ -163,6 +200,9 @@ def polish(path, out_path=None, dry_run=False, verbose=True):
     if verbose:
         name = os.path.basename(str(path))
         print(f"== polish {name}: {len(cues)} -> {len(rows)} cues ==")
+        if reencoded:
+            print(f"   re-encoded {encoding} -> UTF-8 (no BOM); accented characters "
+                  "were displaying as mojibake")
         for k, v in stats.items():
             if v and not k.startswith("_"):
                 print(f"   {k}: {v}")
@@ -210,9 +250,12 @@ if __name__ == "__main__":
                                         "(only valid with a single input)")
     ap.add_argument("--dry-run", action="store_true",
                     help="report what would change without writing")
+    ap.add_argument("--reencode-only", action="store_true",
+                    help="ONLY rewrite the file as UTF-8 (no BOM), leaving every cue's "
+                         "text, line breaks and timings exactly as they are")
     a = ap.parse_args()
     if a.out and len(a.paths) > 1:
         ap.error("-o takes a single input file; with several inputs each is "
                  "polished in place (a .bak is kept)")
     for p in a.paths:
-        polish(p, out_path=a.out, dry_run=a.dry_run)
+        polish(p, out_path=a.out, dry_run=a.dry_run, reencode_only=a.reencode_only)

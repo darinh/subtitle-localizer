@@ -373,8 +373,7 @@ def fill_gaps(key, reference, model_name=DEFAULT_MODEL, device="auto", audio=Non
 
     draft, _ = srt_utils.parse_srt(draft_path.read_text(encoding="utf-8"), strict=True)
     have = sorted(srt_utils.cue_bounds(c["ts"]) for c in draft)
-    ref_cues, _ = srt_utils.parse_srt(
-        open(reference, encoding="utf-8-sig", errors="replace").read(), strict=False)
+    ref_cues, _ = srt_utils.parse_srt(srt_utils.read_text(reference)[0], strict=False)
     ref = sorted(srt_utils.cue_bounds(c["ts"]) for c in ref_cues)
     if not ref:
         raise SystemExit(f"FAIL: no cues parsed from reference {reference}")

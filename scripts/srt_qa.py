@@ -45,9 +45,13 @@ def _pct(vals, p):
 
 
 def qa(path, top=15, verbose=True):
-    raw = open(path, encoding="utf-8").read()
+    raw, encoding = srt_utils.read_text(path)
     hard, soft = [], []
 
+    if encoding != "utf-8":
+        hard.append(
+            f"file is {encoding}, not UTF-8 — every accented character displays as "
+            f"mojibake in a player that assumes UTF-8 (srt_polish rewrites it)")
     if raw.startswith(srt_utils.BOM):
         hard.append("BOM present (strip it: UTF-8 without BOM)")
     if re.search(r"\\n|`n|`r", raw):

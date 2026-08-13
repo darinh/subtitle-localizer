@@ -154,6 +154,29 @@ under `asr:` in the project config (`strip_hallucinations`, `hallucination_min_r
 against its source and the target-language guardrails, while `srt_qa.py` judges **any**
 SRT on its own terms — useful for an ASR draft or any incoming subtitle file.
 
+### Incoming sidecars are often not UTF-8
+A downloaded Spanish, French or Portuguese `.srt` is very frequently **cp1252/Latin-1**.
+Every accented character then displays as mojibake in a player that assumes UTF-8, which
+looks like a broken subtitle even though the cues themselves are perfectly fine. Reading
+such a file with `encoding="utf-8"` raises before the first cue; reading it with
+`errors="replace"` is worse, because it silently turns every accent into `U+FFFD` and the
+damage then looks like the source's fault.
+
+`srt_utils.read_text()` decodes UTF-8 → cp1252 → Latin-1 and **reports which it used**, so
+`srt_qa.py` can flag a non-UTF-8 file as **HARD** (it corrupts what the viewer sees) and
+`srt_polish.py` can fix it:
+
+```bash
+python scripts/srt_qa.py     downloaded.es.srt          # HARD: file is cp1252, not UTF-8
+python scripts/srt_polish.py downloaded.es.srt --reencode-only
+```
+
+`--reencode-only` rewrites the bytes as UTF-8 without a BOM and changes **nothing else** —
+every cue's text, line breaks and timings are preserved, and the pass verifies that before
+it leaves the file in place. Use it rather than a full polish when a sidecar's only fault
+is its encoding: a distributor's line breaks are usually deliberate, and its timings are
+not yours to nudge.
+
 ## What you get / guarantees
 - **Timestamps are sacred** — reattached byte-for-byte; the builder re-parses its own
   output to prove it.

@@ -21,6 +21,36 @@ def normalize(text):
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+# Encodings tried, in order, when reading a subtitle we did not write ourselves.
+# latin-1 is last because it maps all 256 byte values and therefore never fails —
+# it is the backstop, not a guess.
+READ_ENCODINGS = ("utf-8", "cp1252", "latin-1")
+
+
+def read_text(path, encodings=READ_ENCODINGS):
+    """Read a subtitle file that is not necessarily UTF-8. Returns (text, encoding).
+
+    Subtitle files in the wild are very often cp1252/Latin-1 — Spanish, French and
+    Portuguese sidecars especially. Opening one with encoding="utf-8" raises before
+    a single cue is read, and opening it with errors="replace" is worse: every
+    accented character silently becomes U+FFFD, and the damage then looks like it
+    was in the source file rather than in how we read it.
+
+    A BOM is deliberately NOT stripped here — `normalize` does that for parsing,
+    while callers that audit the file (srt_qa) need to see that it was present.
+    Pure-ASCII text decodes as "utf-8", so the returned encoding names a real
+    problem only when the bytes genuinely are not UTF-8.
+    """
+    with open(path, "rb") as f:
+        data = f.read()
+    for enc in encodings:
+        try:
+            return data.decode(enc), enc
+        except UnicodeDecodeError:
+            continue
+    raise SystemExit(f"FAIL: cannot decode {path} as any of {', '.join(encodings)}")
+
+
 def parse_srt(text, strict=True):
     """Return ([{num:int, ts:str, text:[str,...]}], problems). Raises ValueError on
     malformed blocks when strict=True (so corruption is never silent)."""
