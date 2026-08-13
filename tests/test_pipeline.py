@@ -857,6 +857,49 @@ _frows, _fstats = srt_polish.polish(WORK / "RE.srt", out_path=WORK / "RE.full.sr
 check("...whereas the full polish does reflow or retime it",
       _fstats["rewrapped"] + _fstats["extended_short"] + _fstats["cps_relieved"] > 0)
 
+# a cue whose text OPENS with a blank line: rebuilding through the writer would
+# silently drop that line, so reencode-only must emit the decoded source instead
+_ODD = ("1\n00:00:01,000 --> 00:00:03,000\n\nHola\n\n"
+        "2\n00:00:04,000 --> 00:00:05,000\nA\u00fan\n\nm\u00e1s\n")
+(WORK / "ODD.srt").write_bytes(_ODD.encode("cp1252"))
+_oin, _ = srt_utils.parse_srt(_ODD, strict=False)
+srt_polish.polish(WORK / "ODD.srt", out_path=WORK / "ODD.out.srt",
+                  verbose=False, reencode_only=True)
+_otxt2, _oenc2 = srt_utils.read_text(WORK / "ODD.out.srt")
+_oout, _ = srt_utils.parse_srt(_otxt2, strict=False)
+check("reencode-only preserves a leading blank line inside a cue",
+      [c["text"] for c in _oout] == [c["text"] for c in _oin] and _oenc2 == "utf-8")
+
+# an already-UTF-8 file must be left completely alone, .bak included
+(WORK / "OK8.srt").write_text("1\n00:00:01,000 --> 00:00:02,000\nYa est\u00e1.\n",
+                              encoding="utf-8")
+_before8 = (WORK / "OK8.srt").read_bytes()
+srt_polish.polish(WORK / "OK8.srt", verbose=False, reencode_only=True)
+check("reencode-only does not rewrite a file that is already UTF-8",
+      (WORK / "OK8.srt").read_bytes() == _before8)
+check("...and does not create a .bak for it",
+      not (WORK / "OK8.srt.bak").exists())
+
+# BOM-marked encodings are detected outright rather than guessed at
+(WORK / "U16.srt").write_bytes(
+    "1\n00:00:01,000 --> 00:00:02,000\n\u00bfQu\u00e9?\n".encode("utf-16"))
+_utxt, _uenc = srt_utils.read_text(WORK / "U16.srt")
+check("a UTF-16 subtitle is decoded by its BOM, not mangled as cp1252",
+      _uenc.startswith("utf-16") and "\u00bfQu\u00e9?" in _utxt)
+_ucues, _uprob = srt_utils.parse_srt(_utxt, strict=False)
+check("...and then parses normally", len(_ucues) == 1 and not _uprob)
+
+# an explicit override wins over the fallback chain (the cp1251 Cyrillic case a
+# reviewer found: nothing can tell it from cp1252 by bytes alone)
+_CYR = "1\n00:00:01,000 --> 00:00:02,000\n\u041f\u0440\u0438\u0432\u0435\u0442\n"
+(WORK / "CYR.srt").write_bytes(_CYR.encode("cp1251"))
+check("without help, cp1251 is silently read as cp1252 (documented limit)",
+      srt_utils.read_text(WORK / "CYR.srt")[1] == "cp1252")
+check("--encoding recovers it exactly",
+      srt_utils.read_text(WORK / "CYR.srt", encoding="cp1251")[0] == _CYR)
+expect_raises("a bogus --encoding fails loud",
+              lambda: srt_utils.read_text(WORK / "CYR.srt", encoding="not-a-codec"))
+
 # === summary =================================================================
 print(f"\n{PASS} passed, {FAIL} failed")
 shutil.rmtree(TMP, ignore_errors=True)

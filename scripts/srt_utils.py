@@ -26,8 +26,17 @@ def normalize(text):
 # it is the backstop, not a guess.
 READ_ENCODINGS = ("utf-8", "cp1252", "latin-1")
 
+# Byte-order marks are the one part of encoding detection that is not guesswork.
+# utf-32 must be tested before utf-16: a utf-32-le BOM starts with the utf-16-le one.
+# The value is the codec used to DECODE (plain "utf-16"/"utf-32" consume the BOM
+# themselves); the label is what gets reported.
+_BOMS = ((b"\x00\x00\xfe\xff", "utf-32", "utf-32-be"),
+         (b"\xff\xfe\x00\x00", "utf-32", "utf-32-le"),
+         (b"\xff\xfe", "utf-16", "utf-16-le"),
+         (b"\xfe\xff", "utf-16", "utf-16-be"))
 
-def read_text(path, encodings=READ_ENCODINGS):
+
+def read_text(path, encodings=READ_ENCODINGS, encoding=None):
     """Read a subtitle file that is not necessarily UTF-8. Returns (text, encoding).
 
     Subtitle files in the wild are very often cp1252/Latin-1 — Spanish, French and
@@ -36,13 +45,29 @@ def read_text(path, encodings=READ_ENCODINGS):
     accented character silently becomes U+FFFD, and the damage then looks like it
     was in the source file rather than in how we read it.
 
-    A BOM is deliberately NOT stripped here — `normalize` does that for parsing,
+    LIMIT, and why the encoding is always reported rather than just used: past the
+    BOM cases below this is a fallback chain, not charset detection. cp1252 and
+    latin-1 accept essentially any byte, so a subtitle in another single-byte
+    encoding (cp1251 Cyrillic, cp1253 Greek, cp1250 Central European) decodes
+    "successfully" into mojibake instead of failing. Nothing here can tell those
+    apart from a Western sidecar, so callers print what was assumed and every entry
+    point takes an explicit `encoding` override for when the guess is wrong.
+
+    A utf-8 BOM is deliberately NOT stripped — `normalize` does that for parsing,
     while callers that audit the file (srt_qa) need to see that it was present.
     Pure-ASCII text decodes as "utf-8", so the returned encoding names a real
     problem only when the bytes genuinely are not UTF-8.
     """
     with open(path, "rb") as f:
         data = f.read()
+    if encoding:
+        try:
+            return data.decode(encoding), encoding
+        except (UnicodeDecodeError, LookupError) as e:
+            raise SystemExit(f"FAIL: cannot decode {path} as {encoding}: {e}")
+    for bom, codec, label in _BOMS:
+        if data.startswith(bom):
+            return data.decode(codec), label
     for enc in encodings:
         try:
             return data.decode(enc), enc

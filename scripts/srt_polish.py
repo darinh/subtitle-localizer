@@ -43,8 +43,23 @@ def _norm(s):
     return re.sub(r"[\W_]+", " ", s.lower()).strip()
 
 
-def polish(path, out_path=None, dry_run=False, verbose=True, reencode_only=False):
-    raw, encoding = srt_utils.read_text(path)
+def _same_file(dst, src):
+    """True when writing to dst would overwrite src.
+
+    A string compare misses `file.srt` vs `.\\file.srt` vs an absolute path, and
+    getting it wrong means overwriting the user's only copy with no .bak.
+    """
+    try:
+        if os.path.exists(dst):
+            return os.path.samefile(dst, src)
+    except OSError:
+        pass
+    return os.path.abspath(str(dst)) == os.path.abspath(str(src))
+
+
+def polish(path, out_path=None, dry_run=False, verbose=True, reencode_only=False,
+           encoding=None):
+    raw, encoding = srt_utils.read_text(path, encoding=encoding)
     cues, problems = srt_utils.parse_srt(raw, strict=False)
     if problems:
         raise SystemExit(f"FAIL: {os.path.basename(str(path))} has {len(problems)} malformed "
@@ -72,31 +87,55 @@ def polish(path, out_path=None, dry_run=False, verbose=True, reencode_only=False
         # only fault is its bytes, reflowing its line breaks and nudging its cue
         # ends is unwanted churn — line breaks in a distributor's subtitle are
         # often deliberate, and the timing is not ours to adjust.
+        #
+        # The output is the DECODED SOURCE TEXT, not a reconstruction of it. Going
+        # back through the cue list would quietly rewrite anything the writer
+        # normalizes (a cue whose text opens with a blank line, say), which is
+        # exactly what this mode promises not to do.
+        had_bom = raw.startswith(srt_utils.BOM)
+        text = raw[1:] if had_bom else raw
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        if not text.endswith("\n"):
+            text += "\n"
         rows = [(c["num"], c["ts"], "\n".join(c["text"])) for c in cues]
+        name = os.path.basename(str(path))
+        if not (reencoded or had_bom):
+            if verbose:
+                print(f"== re-encode {name}: {len(cues)} cues ==")
+                print("   already UTF-8 without a BOM — nothing to do, file untouched")
+            return rows, stats
+
+        # Verify the CANDIDATE before writing anything, so a failure cannot leave a
+        # damaged file (and a clobbered .bak) behind.
+        after, probs = srt_utils.parse_srt(text, strict=False)
+        if probs or len(after) != len(cues) \
+                or [c["ts"] for c in after] != [c["ts"] for c in cues] \
+                or [c["text"] for c in after] != [c["text"] for c in cues] \
+                or [c["num"] for c in after] != [c["num"] for c in cues]:
+            raise SystemExit(f"FAIL: re-encoding {name} would alter more than its "
+                             "encoding — nothing was written")
         if verbose:
-            name = os.path.basename(str(path))
-            print(f"== re-encode {name}: {len(rows)} cues ==")
-            print(f"   {encoding} -> UTF-8 (no BOM)"
-                  if reencoded else "   already UTF-8; nothing to do")
+            print(f"== re-encode {name}: {len(cues)} cues ==")
+            print(f"   {encoding}{' with BOM' if had_bom else ''} -> UTF-8 (no BOM)")
             if dry_run:
                 print("   (dry run — nothing written)")
         if dry_run:
             return rows, stats
+
         dst = out_path or path
-        if str(dst) == str(path):
+        if _same_file(dst, path):
             shutil.copyfile(path, str(path) + ".bak")
-        srt_utils.write_srt(rows, dst)
-        after, probs = srt_utils.parse_srt(
+        with open(dst, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        landed, lprobs = srt_utils.parse_srt(
             open(dst, encoding="utf-8").read(), strict=True)
-        # prove nothing but the encoding moved
-        if probs or len(after) != len(cues) \
-                or [c["ts"] for c in after] != [c["ts"] for c in cues] \
-                or [c["text"] for c in after] != [c["text"] for c in cues]:
-            raise SystemExit(f"FAIL: re-encode altered {os.path.basename(str(dst))} "
-                             "beyond its encoding — refusing to leave it in place")
+        if lprobs or [c["ts"] for c in landed] != [c["ts"] for c in cues] \
+                or [c["text"] for c in landed] != [c["text"] for c in cues]:
+            raise SystemExit(f"FAIL: {os.path.basename(str(dst))} did not re-read as "
+                             "written (the original is beside it as .bak)")
         if verbose:
             print(f"   wrote {os.path.basename(str(dst))} "
-                  f"({len(after)} cues, timings and text byte-identical)")
+                  f"({len(landed)} cues, timings and text unchanged)")
         return rows, stats
 
     # --- 1. load into a working list, dropping empties -----------------------
@@ -253,9 +292,13 @@ if __name__ == "__main__":
     ap.add_argument("--reencode-only", action="store_true",
                     help="ONLY rewrite the file as UTF-8 (no BOM), leaving every cue's "
                          "text, line breaks and timings exactly as they are")
+    ap.add_argument("--encoding",
+                    help="force the INPUT encoding (e.g. cp1251) instead of trying "
+                         "utf-8 then cp1252 then latin-1; use when the guess is wrong")
     a = ap.parse_args()
     if a.out and len(a.paths) > 1:
         ap.error("-o takes a single input file; with several inputs each is "
                  "polished in place (a .bak is kept)")
     for p in a.paths:
-        polish(p, out_path=a.out, dry_run=a.dry_run, reencode_only=a.reencode_only)
+        polish(p, out_path=a.out, dry_run=a.dry_run, reencode_only=a.reencode_only,
+               encoding=a.encoding)
