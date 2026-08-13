@@ -177,6 +177,23 @@ it leaves the file in place. Use it rather than a full polish when a sidecar's o
 is its encoding: a distributor's line breaks are usually deliberate, and its timings are
 not yours to nudge.
 
+### A sidecar that is uniformly early or late
+```bash
+python scripts/srt_polish.py downloaded.es.srt --shift -500   # 500 ms earlier
+```
+`--shift` moves every cue by a fixed number of milliseconds and changes nothing else. It
+rewrites **only the timestamp lines** of the decoded source, so cue text, line breaks,
+numbering and any trailing position coordinates come through untouched; before writing it
+checks that every cue moved by exactly that amount and that **no duration changed**. A cue
+that would land before `00:00:00` is clamped there *keeping its duration*.
+
+> Measure before you shift. Match cues to a reference track that is in sync with the video
+> — an embedded track is synced by construction — and take the **median** offset over
+> confident pairs; two tracks that split lines differently produce a lot of nearest-cue
+> noise around it. On one real sidecar that was median −388 ms (IQR −517…−210), and
+> `--shift -500` moved it to +56 ms: centred, and a touch early, which is the right side
+> of the audio to be on.
+
 ## What you get / guarantees
 - **Timestamps are sacred** — reattached byte-for-byte; the builder re-parses its own
   output to prove it.

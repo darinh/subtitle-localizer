@@ -900,6 +900,82 @@ check("--encoding recovers it exactly",
 expect_raises("a bogus --encoding fails loud",
               lambda: srt_utils.read_text(WORK / "CYR.srt", encoding="not-a-codec"))
 
+print("[19] --shift (a sidecar that is uniformly late)")
+_SH = ("1\n00:00:10,000 --> 00:00:12,500\nPrimera\nl\u00ednea\n\n"
+       "2\n00:00:20,250 --> 00:00:21,000\n\u00a1Ya!\n\n"
+       "3\n00:01:00,000 --> 00:01:03,000\n- Uno.\n- Dos.\n")
+(WORK / "SH.srt").write_text(_SH, encoding="utf-8")
+_shin, _ = srt_utils.parse_srt(_SH, strict=True)
+srt_polish.polish(WORK / "SH.srt", out_path=WORK / "SH.out.srt", verbose=False,
+                  shift_ms=-500)
+_shtxt, _ = srt_utils.read_text(WORK / "SH.out.srt")
+_shout, _ = srt_utils.parse_srt(_shtxt, strict=True)
+check("shift moved every cue by exactly -500 ms",
+      all(srt_utils.ms(srt_utils.cue_bounds(n["ts"])[0])
+          == srt_utils.ms(srt_utils.cue_bounds(o["ts"])[0]) - 500
+          for o, n in zip(_shin, _shout)))
+check("shift moved cue ENDS by the same amount",
+      all(srt_utils.ms(srt_utils.cue_bounds(n["ts"])[1])
+          == srt_utils.ms(srt_utils.cue_bounds(o["ts"])[1]) - 500
+          for o, n in zip(_shin, _shout)))
+check("shift preserved every duration",
+      [srt_utils.ms(srt_utils.cue_bounds(c["ts"])[1])
+       - srt_utils.ms(srt_utils.cue_bounds(c["ts"])[0]) for c in _shout]
+      == [srt_utils.ms(srt_utils.cue_bounds(c["ts"])[1])
+          - srt_utils.ms(srt_utils.cue_bounds(c["ts"])[0]) for c in _shin])
+check("shift preserved text, line breaks and numbering",
+      [c["text"] for c in _shout] == [c["text"] for c in _shin]
+      and [c["num"] for c in _shout] == [c["num"] for c in _shin])
+check("a known cue landed exactly where arithmetic says",
+      _shout[1]["ts"] == "00:00:19,750 --> 00:00:20,500")
+
+# positive shift for a subtitle that runs early
+srt_polish.polish(WORK / "SH.srt", out_path=WORK / "SH.late.srt", verbose=False,
+                  shift_ms=1250)
+_lt, _ = srt_utils.parse_srt(srt_utils.read_text(WORK / "SH.late.srt")[0], strict=True)
+check("a positive shift moves cues later",
+      _lt[0]["ts"] == "00:00:11,250 --> 00:00:13,750")
+
+# clamping: a cue that would land before zero keeps its DURATION
+_EARLY = "1\n00:00:00,200 --> 00:00:02,200\nInicio\n\n2\n00:00:30,000 --> 00:00:31,000\nLuego\n"
+(WORK / "SHC.srt").write_text(_EARLY, encoding="utf-8")
+srt_polish.polish(WORK / "SHC.srt", out_path=WORK / "SHC.out.srt", verbose=False,
+                  shift_ms=-500)
+_ct, _ = srt_utils.parse_srt(srt_utils.read_text(WORK / "SHC.out.srt")[0], strict=True)
+check("a cue that would go negative is clamped to zero",
+      _ct[0]["ts"].startswith("00:00:00,000"))
+check("...and keeps its full duration rather than being truncated",
+      _ct[0]["ts"] == "00:00:00,000 --> 00:00:02,000")
+check("...while later cues still get the full shift",
+      _ct[1]["ts"] == "00:00:29,500 --> 00:00:30,500")
+
+# a shift must not quietly reflow or drop anything the way a full polish would
+_SHW = ("1\n00:00:10,000 --> 00:00:10,300\nUna l\u00ednea corta\ny otra corta\n\n"
+        "2\n00:00:20,000 --> 00:00:21,000\nOtra\n")
+(WORK / "SHW.srt").write_text(_SHW, encoding="utf-8")
+_sw, _ = srt_polish.polish(WORK / "SHW.srt", out_path=WORK / "SHW.out.srt",
+                           verbose=False, shift_ms=-500)
+_swt, _ = srt_utils.parse_srt(srt_utils.read_text(WORK / "SHW.out.srt")[0], strict=True)
+_swi, _ = srt_utils.parse_srt(_SHW, strict=True)
+check("shift left a short cue short and a two-line cue two-line",
+      [c["text"] for c in _swt] == [c["text"] for c in _swi])
+
+# dry-run writes nothing
+_pre = (WORK / "SH.srt").read_bytes()
+srt_polish.polish(WORK / "SH.srt", verbose=False, shift_ms=-500, dry_run=True)
+check("--shift --dry-run does not touch the file",
+      (WORK / "SH.srt").read_bytes() == _pre)
+
+# shift and re-encode compose in one pass
+(WORK / "SHE.srt").write_bytes(_SH.encode("cp1252"))
+srt_polish.polish(WORK / "SHE.srt", out_path=WORK / "SHE.out.srt", verbose=False,
+                  shift_ms=-500)
+_set, _senc = srt_utils.read_text(WORK / "SHE.out.srt")
+_sec, _ = srt_utils.parse_srt(_set, strict=True)
+check("a shift also converts a Latin-1 sidecar to UTF-8",
+      _senc == "utf-8" and "\u00a1Ya!" in _set
+      and _sec[1]["ts"] == "00:00:19,750 --> 00:00:20,500")
+
 # === summary =================================================================
 print(f"\n{PASS} passed, {FAIL} failed")
 shutil.rmtree(TMP, ignore_errors=True)

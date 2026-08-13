@@ -49,6 +49,14 @@ before changing anything. None reference a specific title — they generalize.
     extended 26 cue ends. Line breaks in a professional subtitle are deliberate and its
     timings are not yours to nudge, so a narrow `--reencode-only` mode that asserts
     byte-identical text and timings is the correct tool.
+10d. **A small CONSTANT lag is a real defect, not variance — believe the viewer.** A
+    median −388 ms offset (IQR −517…−210) was measured and waved off as normal
+    authoring difference; the viewer independently reported "500 ms late" and was
+    right. Sub-second is well within perception. Measure it against a reference that is
+    in sync by construction (an embedded track), take the MEDIAN over confident
+    mutual-nearest pairs — differing line splits make raw nearest-cue matching noisy —
+    and prefer landing slightly EARLY, since a cue may precede its line but must never
+    trail it.
 11. **Centralize SRT parsing; make it fail loud.** A naive `split("\n\n")` silently drops
     any cue containing an internal blank line — split only at a blank line FOLLOWED BY an
     index+timestamp header, and cross-check header-count == parsed-count. One parser

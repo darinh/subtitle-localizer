@@ -23,6 +23,7 @@ condensation, which is a judgement call, so they are reported for review instead
   python srt_polish.py work/the-film.src.srt -o out.srt
   python srt_polish.py work/the-film.src.srt --dry-run
   python srt_polish.py downloaded.es.srt --reencode-only  # ONLY fix Latin-1 bytes
+  python srt_polish.py downloaded.es.srt --shift -500     # ONLY pull it 500ms earlier
 """
 import os
 import re
@@ -37,6 +38,40 @@ CFG = config.load()
 PUNCT_ONLY = re.compile(r"^[\W_]+$", re.U)
 MIN_GAP = 0.04            # keep a visible frame-ish gap between consecutive cues
 DUP_GAP = 1.5             # identical text further apart than this is a real repeat
+_TSPART = r"\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}"
+_TS_LINE = re.compile(r"(?m)^[ \t]*(" + _TSPART + r")[ \t]*-->[ \t]*("
+                      + _TSPART + r")(.*)$")
+
+
+def _shift_text(text, shift_ms):
+    """Move every cue by shift_ms, rewriting ONLY the timestamp lines.
+
+    Editing the raw text in place, rather than rebuilding the file from parsed
+    cues, is what makes this safe to run on someone else's subtitle: the cue text,
+    its line breaks, the numbering and any trailing position coordinates on a
+    timestamp line all come through untouched because they are never re-emitted.
+
+    A cue that would land before zero is clamped to zero WITH ITS DURATION INTACT
+    (a shifted subtitle that silently got shorter at the head would be worse than
+    one that starts a little late). Returns (new_text, n_clamped).
+    """
+    clamped = 0
+
+    def repl(m):
+        nonlocal clamped
+        a = srt_utils.ms(srt_utils.ts_seconds(m.group(1)))
+        b = srt_utils.ms(srt_utils.ts_seconds(m.group(2)))
+        dur = b - a
+        na = a + shift_ms
+        if na < 0:
+            clamped += 1
+            na, nb = 0, dur
+        else:
+            nb = b + shift_ms
+        return (f"{srt_utils.format_ts(na / 1000.0)} --> "
+                f"{srt_utils.format_ts(nb / 1000.0)}{m.group(3)}")
+
+    return _TS_LINE.sub(repl, text), clamped
 
 
 def _norm(s):
@@ -58,7 +93,7 @@ def _same_file(dst, src):
 
 
 def polish(path, out_path=None, dry_run=False, verbose=True, reencode_only=False,
-           encoding=None):
+           encoding=None, shift_ms=0):
     raw, encoding = srt_utils.read_text(path, encoding=encoding)
     cues, problems = srt_utils.parse_srt(raw, strict=False)
     if problems:
@@ -82,24 +117,27 @@ def polish(path, out_path=None, dry_run=False, verbose=True, reencode_only=False
     # Spanish or French subtitle.
     reencoded = encoding != "utf-8"
 
-    if reencode_only:
-        # Surgical mode: change the ENCODING and nothing else. When a sidecar's
-        # only fault is its bytes, reflowing its line breaks and nudging its cue
-        # ends is unwanted churn — line breaks in a distributor's subtitle are
-        # often deliberate, and the timing is not ours to adjust.
+    if reencode_only or shift_ms:
+        # Surgical mode: change the ENCODING and/or move every cue by a fixed
+        # amount — and nothing else. When a sidecar is simply late, reflowing its
+        # line breaks and nudging individual cue ends is unwanted churn: those
+        # line breaks are deliberate and the relative timing is already correct.
         #
-        # The output is the DECODED SOURCE TEXT, not a reconstruction of it. Going
-        # back through the cue list would quietly rewrite anything the writer
-        # normalizes (a cue whose text opens with a blank line, say), which is
-        # exactly what this mode promises not to do.
+        # The output is the DECODED SOURCE TEXT with only the timestamp lines
+        # rewritten. Rebuilding from the cue list would quietly change anything
+        # the writer normalises (a cue whose text opens with a blank line, say),
+        # which is exactly what this mode promises not to do.
         had_bom = raw.startswith(srt_utils.BOM)
         text = raw[1:] if had_bom else raw
         text = text.replace("\r\n", "\n").replace("\r", "\n")
         if not text.endswith("\n"):
             text += "\n"
+        clamped = 0
+        if shift_ms:
+            text, clamped = _shift_text(text, shift_ms)
         rows = [(c["num"], c["ts"], "\n".join(c["text"])) for c in cues]
         name = os.path.basename(str(path))
-        if not (reencoded or had_bom):
+        if not (reencoded or had_bom or shift_ms):
             if verbose:
                 print(f"== re-encode {name}: {len(cues)} cues ==")
                 print("   already UTF-8 without a BOM — nothing to do, file untouched")
@@ -108,15 +146,43 @@ def polish(path, out_path=None, dry_run=False, verbose=True, reencode_only=False
         # Verify the CANDIDATE before writing anything, so a failure cannot leave a
         # damaged file (and a clobbered .bak) behind.
         after, probs = srt_utils.parse_srt(text, strict=False)
-        if probs or len(after) != len(cues) \
-                or [c["ts"] for c in after] != [c["ts"] for c in cues] \
-                or [c["text"] for c in after] != [c["text"] for c in cues] \
-                or [c["num"] for c in after] != [c["num"] for c in cues]:
-            raise SystemExit(f"FAIL: re-encoding {name} would alter more than its "
-                             "encoding — nothing was written")
+        ok = (not probs and len(after) == len(cues)
+              and [c["text"] for c in after] == [c["text"] for c in cues]
+              and [c["num"] for c in after] == [c["num"] for c in cues])
+        if ok and shift_ms:
+            # every unclamped cue moved by exactly shift_ms, and no duration changed
+            moved = 0
+            for old, new in zip(cues, after):
+                oa, ob = (srt_utils.ms(x) for x in srt_utils.cue_bounds(old["ts"]))
+                na, nb = (srt_utils.ms(x) for x in srt_utils.cue_bounds(new["ts"]))
+                if (nb - na) != (ob - oa):
+                    ok = False
+                    break
+                if na == oa + shift_ms:
+                    moved += 1
+                elif not (na == 0 and oa + shift_ms < 0):
+                    ok = False
+                    break
+            if moved != len(cues) - clamped:
+                ok = False
+        elif ok:
+            ok = [c["ts"] for c in after] == [c["ts"] for c in cues]
+        if not ok:
+            raise SystemExit(f"FAIL: the requested change to {name} would alter more "
+                             "than it should — nothing was written")
         if verbose:
-            print(f"== re-encode {name}: {len(cues)} cues ==")
-            print(f"   {encoding}{' with BOM' if had_bom else ''} -> UTF-8 (no BOM)")
+            what = []
+            if reencoded or had_bom:
+                what.append(f"{encoding}{' with BOM' if had_bom else ''} -> UTF-8 (no BOM)")
+            if shift_ms:
+                what.append(f"shifted every cue by {shift_ms:+d} ms "
+                            f"({'earlier' if shift_ms < 0 else 'later'})")
+            print(f"== {'shift' if shift_ms else 're-encode'} {name}: {len(cues)} cues ==")
+            for w in what:
+                print(f"   {w}")
+            if clamped:
+                print(f"   {clamped} cue(s) would have started before 00:00:00 and were "
+                      "clamped there, keeping their duration")
             if dry_run:
                 print("   (dry run — nothing written)")
         if dry_run:
@@ -129,13 +195,13 @@ def polish(path, out_path=None, dry_run=False, verbose=True, reencode_only=False
             f.write(text)
         landed, lprobs = srt_utils.parse_srt(
             open(dst, encoding="utf-8").read(), strict=True)
-        if lprobs or [c["ts"] for c in landed] != [c["ts"] for c in cues] \
-                or [c["text"] for c in landed] != [c["text"] for c in cues]:
+        if lprobs or [c["text"] for c in landed] != [c["text"] for c in cues] \
+                or [c["ts"] for c in landed] != [c["ts"] for c in after]:
             raise SystemExit(f"FAIL: {os.path.basename(str(dst))} did not re-read as "
                              "written (the original is beside it as .bak)")
         if verbose:
             print(f"   wrote {os.path.basename(str(dst))} "
-                  f"({len(landed)} cues, timings and text unchanged)")
+                  f"({len(landed)} cues, text and durations unchanged)")
         return rows, stats
 
     # --- 1. load into a working list, dropping empties -----------------------
@@ -295,10 +361,14 @@ if __name__ == "__main__":
     ap.add_argument("--encoding",
                     help="force the INPUT encoding (e.g. cp1251) instead of trying "
                          "utf-8 then cp1252 then latin-1; use when the guess is wrong")
+    ap.add_argument("--shift", type=int, default=0, metavar="MS",
+                    help="move EVERY cue by this many milliseconds, changing nothing "
+                         "else (negative = earlier, e.g. --shift -500 for a subtitle "
+                         "that shows up half a second late)")
     a = ap.parse_args()
     if a.out and len(a.paths) > 1:
         ap.error("-o takes a single input file; with several inputs each is "
                  "polished in place (a .bak is kept)")
     for p in a.paths:
         polish(p, out_path=a.out, dry_run=a.dry_run, reencode_only=a.reencode_only,
-               encoding=a.encoding)
+               encoding=a.encoding, shift_ms=a.shift)
