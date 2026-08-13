@@ -156,9 +156,22 @@ def ms(t):
     return int(round(float(t) * 1000))
 
 
+_BOUNDS = re.compile(r"(" + _TSPART + r")[ \t]*-->[ \t]*(" + _TSPART + r")")
+
+
 def cue_bounds(ts):
-    a, b = re.split(r"\s*-->\s*", ts)
-    return ts_seconds(a), ts_seconds(b)
+    """'HH:MM:SS,mmm --> HH:MM:SS,mmm' -> (start_seconds, end_seconds).
+
+    Matches the two timestamps rather than splitting the line, because SubRip
+    allows trailing display coordinates after the end time
+    (``... --> 00:00:12,500 X1:100 X2:200 Y1:80 Y2:120``). Splitting on "-->" and
+    handing the remainder to ts_seconds makes those extra colons explode with an
+    unpack error, which is a crash rather than the clean failure a caller expects.
+    """
+    m = _BOUNDS.search(ts)
+    if not m:
+        raise ValueError(f"not a timestamp line: {ts!r}")
+    return ts_seconds(m.group(1)), ts_seconds(m.group(2))
 
 
 def write_srt(cues, path):

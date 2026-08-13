@@ -74,6 +74,20 @@ def _shift_text(text, shift_ms):
     return _TS_LINE.sub(repl, text), clamped
 
 
+def _count_overlaps(cuelist):
+    """Cues that start before the previous one ends (or out of order)."""
+    n, prev_end = 0, None
+    for c in cuelist:
+        try:
+            a, b = srt_utils.cue_bounds(c["ts"])
+        except ValueError:
+            continue
+        if prev_end is not None and a < prev_end - 1e-6:
+            n += 1
+        prev_end = b
+    return n
+
+
 def _norm(s):
     return re.sub(r"[\W_]+", " ", s.lower()).strip()
 
@@ -181,8 +195,15 @@ def polish(path, out_path=None, dry_run=False, verbose=True, reencode_only=False
             for w in what:
                 print(f"   {w}")
             if clamped:
-                print(f"   {clamped} cue(s) would have started before 00:00:00 and were "
-                      "clamped there, keeping their duration")
+                # a clamped cue is the ONE case where this mode does not preserve
+                # relative timing, so say so rather than just counting it
+                new_ov = _count_overlaps(after) - _count_overlaps(cues)
+                print(f"   WARN {clamped} cue(s) would have started before "
+                      "00:00:00 and were clamped there, keeping their duration — "
+                      "their timing RELATIVE to the rest has changed")
+                if new_ov > 0:
+                    print(f"   WARN that left {new_ov} new overlapping cue(s) at the "
+                          "head of the file; run a full polish if you want them fixed")
             if dry_run:
                 print("   (dry run — nothing written)")
         if dry_run:

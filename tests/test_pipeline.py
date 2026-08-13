@@ -976,6 +976,67 @@ check("a shift also converts a Latin-1 sidecar to UTF-8",
       _senc == "utf-8" and "\u00a1Ya!" in _set
       and _sec[1]["ts"] == "00:00:19,750 --> 00:00:20,500")
 
+# SubRip allows display coordinates after the end time. The shift promises to keep
+# them, and the verification path used to crash on the extra colons instead.
+_COORD = ("1\n00:00:10,000 --> 00:00:12,500 X1:100 X2:200 Y1:80 Y2:120\nCon coords\n\n"
+          "2\n00:00:20,000 --> 00:00:21,000\nSin coords\n")
+(WORK / "CO.srt").write_text(_COORD, encoding="utf-8")
+check("cue_bounds ignores trailing display coordinates",
+      srt_utils.cue_bounds("00:00:10,000 --> 00:00:12,500 X1:100 X2:200 Y1:80 Y2:120")
+      == (10.0, 12.5))
+srt_polish.polish(WORK / "CO.srt", out_path=WORK / "CO.out.srt", verbose=False,
+                  shift_ms=-500)
+_cotxt, _ = srt_utils.read_text(WORK / "CO.out.srt")
+check("shift handles a coordinate-bearing timestamp instead of crashing",
+      "00:00:09,500 --> 00:00:12,000" in _cotxt)
+check("...and preserves the coordinates verbatim",
+      "X1:100 X2:200 Y1:80 Y2:120" in _cotxt)
+
+# two early cues both clamping: the mode keeps their durations, which can leave an
+# overlap that was NOT there before. That is a real change to relative timing and
+# must be surfaced. (Cues chosen so the input itself has no overlap.)
+_CL2 = ("1\n00:00:00,100 --> 00:00:00,400\nUno\n\n"
+        "2\n00:00:00,600 --> 00:00:00,900\nDos\n\n"
+        "3\n00:00:30,000 --> 00:00:31,000\nTres\n")
+(WORK / "CL2.srt").write_text(_CL2, encoding="utf-8")
+_cl2in, _ = srt_utils.parse_srt(_CL2, strict=True)
+check("the clamp fixture starts with no overlap of its own",
+      srt_polish._count_overlaps(_cl2in) == 0)
+_clbuf = io.StringIO()
+with redirect_stdout(_clbuf):
+    srt_polish.polish(WORK / "CL2.srt", out_path=WORK / "CL2.out.srt", shift_ms=-500)
+_clout = _clbuf.getvalue()
+_cl2res, _ = srt_utils.parse_srt(
+    srt_utils.read_text(WORK / "CL2.out.srt")[0], strict=True)
+check("a multi-cue clamp is reported as changing relative timing",
+      "clamped" in _clout and "RELATIVE" in _clout)
+check("clamping really did introduce an overlap here",
+      srt_polish._count_overlaps(_cl2res) > 0)
+check("...and that overlap is called out, not left silent",
+      "overlapping" in _clout)
+check("the unclamped cue still got the full shift",
+      _cl2res[2]["ts"] == "00:00:29,500 --> 00:00:30,500")
+
+# a cue whose DIALOGUE is itself a timestamp span must not be silently rewritten
+_TSTXT = ("1\n00:00:10,000 --> 00:00:12,000\n00:00:01,000 --> 00:00:02,000\n\n"
+          "2\n00:00:20,000 --> 00:00:21,000\nNormal\n")
+(WORK / "TSD.srt").write_text(_TSTXT, encoding="utf-8")
+expect_raises("a timestamp-like line inside dialogue makes shift refuse, not corrupt",
+              lambda: srt_polish.polish(WORK / "TSD.srt", out_path=WORK / "TSD.out.srt",
+                                        verbose=False, shift_ms=-500))
+check("...and nothing was written when it refused",
+      not (WORK / "TSD.out.srt").exists())
+
+# a short millisecond field is SubRip's "left-aligned" form: ,5 == 500 ms
+(WORK / "MS2.srt").write_text("1\n00:00:01,5 --> 00:00:02,25\nCorto\n", encoding="utf-8")
+check("a short ms field reads as left-aligned (,5 = 500 ms)",
+      srt_utils.cue_bounds("00:00:01,5 --> 00:00:02,25") == (1.5, 2.25))
+srt_polish.polish(WORK / "MS2.srt", out_path=WORK / "MS2.out.srt", verbose=False,
+                  shift_ms=-500)
+_m2, _ = srt_utils.parse_srt(srt_utils.read_text(WORK / "MS2.out.srt")[0], strict=True)
+check("...and is normalised to 3 digits on the way out",
+      _m2[0]["ts"] == "00:00:01,000 --> 00:00:01,750")
+
 # === summary =================================================================
 print(f"\n{PASS} passed, {FAIL} failed")
 shutil.rmtree(TMP, ignore_errors=True)
