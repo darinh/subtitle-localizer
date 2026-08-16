@@ -20,6 +20,9 @@ __pycache__/
 venv/
 .pytest_cache/
 
+# Git worktrees (checkouts, never content — see the worktrees skill)
+.worktrees/
+
 # State DB
 *.db
 *.sqlite
