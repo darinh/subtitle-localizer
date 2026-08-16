@@ -96,6 +96,29 @@ def expect_raises(name, fn, expected=SystemExit):
         print(f"  FAIL {name} (expected an error)")
 
 
+def expect_ok(name, fn):
+    """Assert fn() completes, and hand back what it returned.
+
+    The counterpart to expect_raises, and worth having because this file is a
+    flat script: an unexpected SystemExit out of a top-level call ends the RUN,
+    so every later check is skipped and the summary line never prints. One
+    regression would then hide the state of the whole suite. SystemExit derives
+    from BaseException, not Exception, so it has to be named explicitly.
+
+    Returns None on failure — callers must guard whatever they do with the value.
+    """
+    global PASS, FAIL
+    try:
+        result = fn()
+    except (Exception, SystemExit) as e:  # noqa: BLE001 - report, do not abort
+        FAIL += 1
+        print(f"  FAIL {name} (raised {type(e).__name__}: {e})")
+        return None
+    PASS += 1
+    print(f"  ok   {name}")
+    return result
+
+
 print("[0] project overrides")
 _cfg = config.load()
 check("target code override", _cfg.target_code == "es-MX")
@@ -1017,35 +1040,55 @@ check("...and that overlap is called out, not left silent",
 check("the unclamped cue still got the full shift",
       _cl2res[2]["ts"] == "00:00:29,500 --> 00:00:30,500")
 
-# a cue whose DIALOGUE is itself a timestamp span. The dialogue must survive
+# A cue whose DIALOGUE is itself a timestamp span. The dialogue must survive
 # verbatim while the cue's OWN timestamp still moves — a shape-matching rewrite
-# would silently edit the line of dialogue instead.
+# edits the line of dialogue instead, and polish() then refuses the whole file.
+#
+# The fidelity claims below are made against _shift_text directly rather than
+# through polish(): polish() answers a regression with SystemExit, which in a
+# flat script like this one would end the run rather than record a failure.
+# The end-to-end path is covered separately, through expect_ok.
 _TSTXT = ("1\n00:00:10,000 --> 00:00:12,000\n00:00:01,000 --> 00:00:02,000\n\n"
           "2\n00:00:20,000 --> 00:00:21,000\nNormal\n")
-(WORK / "TSD.srt").write_text(_TSTXT, encoding="utf-8")
-srt_polish.polish(WORK / "TSD.srt", out_path=WORK / "TSD.out.srt",
-                  verbose=False, shift_ms=-500)
-_tsd, _ = srt_utils.parse_srt(srt_utils.read_text(WORK / "TSD.out.srt")[0], strict=True)
+_tsd_out, _tsd_clamped = srt_polish._shift_text(_TSTXT, -500)
+_tsd, _ = srt_utils.parse_srt(_tsd_out, strict=True)
 check("a cue whose dialogue reads like a timestamp is still shifted",
       _tsd[0]["ts"] == "00:00:09,500 --> 00:00:11,500")
 check("...and the timestamp-shaped dialogue line is left verbatim",
       _tsd[0]["text"] == ["00:00:01,000 --> 00:00:02,000"])
 check("...and the cue after it is shifted too",
       _tsd[1]["ts"] == "00:00:19,500 --> 00:00:20,500")
+check("...and nothing outside the one timestamp line moved",
+      _tsd_out == _TSTXT.replace("1\n00:00:10,000 --> 00:00:12,000",
+                                 "1\n00:00:09,500 --> 00:00:11,500")
+                        .replace("2\n00:00:20,000 --> 00:00:21,000",
+                                 "2\n00:00:19,500 --> 00:00:20,500")
+      and _tsd_clamped == 0)
+(WORK / "TSD.srt").write_text(_TSTXT, encoding="utf-8")
+if expect_ok("...and the whole shift is accepted end to end, not refused",
+             lambda: srt_polish.polish(WORK / "TSD.srt", out_path=WORK / "TSD.out.srt",
+                                       verbose=False, shift_ms=-500)) is not None:
+    _tsdf, _ = srt_utils.parse_srt(srt_utils.read_text(WORK / "TSD.out.srt")[0],
+                                   strict=True)
+    check("...and the file written out matches what the shift produced",
+          [c["ts"] for c in _tsdf] == [c["ts"] for c in _tsd]
+          and [c["text"] for c in _tsdf] == [c["text"] for c in _tsd])
 
 # the same trap one step deeper: the quoted timestamp sits after a BLANK line
 # inside the cue text, so a scan that resynchronises on blank lines alone would
 # mistake it for a cue header.
 _TSB = ("1\n00:00:10,000 --> 00:00:12,000\nHola\n\n00:00:01,000 --> 00:00:02,000\n\n"
         "2\n00:00:20,000 --> 00:00:21,000\nNormal\n")
-(WORK / "TSB.srt").write_text(_TSB, encoding="utf-8")
-srt_polish.polish(WORK / "TSB.srt", out_path=WORK / "TSB.out.srt",
-                  verbose=False, shift_ms=-500)
-_tsb, _ = srt_utils.parse_srt(srt_utils.read_text(WORK / "TSB.out.srt")[0], strict=True)
+_tsb_out, _ = srt_polish._shift_text(_TSB, -500)
+_tsb, _ = srt_utils.parse_srt(_tsb_out, strict=True)
 check("a timestamp quoted after a blank line inside a cue is not a header",
       _tsb[0]["text"] == ["Hola", "", "00:00:01,000 --> 00:00:02,000"])
 check("...and that cue was shifted by its real timestamp line",
       _tsb[0]["ts"] == "00:00:09,500 --> 00:00:11,500")
+(WORK / "TSB.srt").write_text(_TSB, encoding="utf-8")
+expect_ok("...and that file too survives the end-to-end shift",
+          lambda: srt_polish.polish(WORK / "TSB.srt", out_path=WORK / "TSB.out.srt",
+                                    verbose=False, shift_ms=-500))
 
 # an index line + timestamp WITHOUT the blank line before it is genuinely
 # ambiguous SubRip; parse_srt calls it an embedded header and shift must refuse.
