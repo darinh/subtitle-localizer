@@ -1057,6 +1057,15 @@ expect_raises("an ambiguous embedded header makes shift refuse, not guess",
                                         verbose=False, shift_ms=-500))
 check("...and nothing was written when it refused",
       not (WORK / "TSE.out.srt").exists())
+# that refusal comes from parse_srt, so it would hold for a shape-matching
+# rewrite too. Drive the scanner directly to pin down what THIS change fixed:
+# the old regex rewrote the embedded header's timestamp, this one does not.
+_tse_out, _ = srt_polish._shift_text(_TSE, -500)
+check("the shift scan leaves an embedded header's timestamp alone",
+      "\n7\n00:00:01,000 --> 00:00:02,000\n" in _tse_out)
+check("...while both real cue timestamps still move",
+      "00:00:09,500 --> 00:00:11,500" in _tse_out
+      and "00:00:19,500 --> 00:00:20,500" in _tse_out)
 
 # a short millisecond field is SubRip's "left-aligned" form: ,5 == 500 ms
 (WORK / "MS2.srt").write_text("1\n00:00:01,5 --> 00:00:02,25\nCorto\n", encoding="utf-8")
