@@ -39,17 +39,25 @@ PUNCT_ONLY = re.compile(r"^[\W_]+$", re.U)
 MIN_GAP = 0.04            # keep a visible frame-ish gap between consecutive cues
 DUP_GAP = 1.5             # identical text further apart than this is a real repeat
 _TSPART = r"\d{1,2}:\d{2}:\d{2}[,.]\d{1,3}"
-_TS_LINE = re.compile(r"(?m)^[ \t]*(" + _TSPART + r")[ \t]*-->[ \t]*("
+_TS_LINE = re.compile(r"^[ \t]*(" + _TSPART + r")[ \t]*-->[ \t]*("
                       + _TSPART + r")(.*)$")
+_INDEX_LINE = re.compile(r"^[ \t]*\d+[ \t]*$")
 
 
 def _shift_text(text, shift_ms):
-    """Move every cue by shift_ms, rewriting ONLY the timestamp lines.
+    """Move every cue by shift_ms, rewriting ONLY the cues' own timestamp lines.
 
     Editing the raw text in place, rather than rebuilding the file from parsed
     cues, is what makes this safe to run on someone else's subtitle: the cue text,
     its line breaks, the numbering and any trailing position coordinates on a
     timestamp line all come through untouched because they are never re-emitted.
+
+    Which lines are timestamps is decided by BLOCK STRUCTURE, not by shape. A
+    timestamp is the line right after the index line that opens a cue, exactly as
+    `srt_utils.parse_srt` defines a cue header. Matching the shape anywhere in the
+    file instead would also rewrite a line of *dialogue* that happens to read like
+    a timestamp span — subtitles about video editing really do quote one — and
+    that is silent corruption of the very text this mode promises not to touch.
 
     A cue that would land before zero is clamped to zero WITH ITS DURATION INTACT
     (a shifted subtitle that silently got shorter at the head would be worse than
@@ -57,8 +65,15 @@ def _shift_text(text, shift_ms):
     """
     clamped = 0
 
-    def repl(m):
+    def shift_line(line):
         nonlocal clamped
+        m = _TS_LINE.match(line)
+        if not m:
+            # Not the anchored form (parse_srt is laxer here and would accept a
+            # timestamp with leading junk). Leaving it alone means the caller's
+            # post-write check sees an unmoved cue and refuses, which is the right
+            # outcome for a file this odd.
+            return line
         a = srt_utils.ms(srt_utils.ts_seconds(m.group(1)))
         b = srt_utils.ms(srt_utils.ts_seconds(m.group(2)))
         dur = b - a
@@ -71,7 +86,21 @@ def _shift_text(text, shift_ms):
         return (f"{srt_utils.format_ts(na / 1000.0)} --> "
                 f"{srt_utils.format_ts(nb / 1000.0)}{m.group(3)}")
 
-    return _TS_LINE.sub(repl, text), clamped
+    lines = text.split("\n")
+    # The start of the file opens a block, the same way a blank line does.
+    after_blank = True
+    i = 0
+    while i < len(lines):
+        if (after_blank and _INDEX_LINE.match(lines[i])
+                and i + 1 < len(lines) and _TS_LINE.match(lines[i + 1])):
+            lines[i + 1] = shift_line(lines[i + 1])
+            i += 2                    # skip past the header; the rest is cue text
+            after_blank = False
+            continue
+        after_blank = not lines[i].strip()
+        i += 1
+
+    return "\n".join(lines), clamped
 
 
 def _count_overlaps(cuelist):

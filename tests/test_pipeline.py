@@ -1017,15 +1017,46 @@ check("...and that overlap is called out, not left silent",
 check("the unclamped cue still got the full shift",
       _cl2res[2]["ts"] == "00:00:29,500 --> 00:00:30,500")
 
-# a cue whose DIALOGUE is itself a timestamp span must not be silently rewritten
+# a cue whose DIALOGUE is itself a timestamp span. The dialogue must survive
+# verbatim while the cue's OWN timestamp still moves — a shape-matching rewrite
+# would silently edit the line of dialogue instead.
 _TSTXT = ("1\n00:00:10,000 --> 00:00:12,000\n00:00:01,000 --> 00:00:02,000\n\n"
           "2\n00:00:20,000 --> 00:00:21,000\nNormal\n")
 (WORK / "TSD.srt").write_text(_TSTXT, encoding="utf-8")
-expect_raises("a timestamp-like line inside dialogue makes shift refuse, not corrupt",
-              lambda: srt_polish.polish(WORK / "TSD.srt", out_path=WORK / "TSD.out.srt",
+srt_polish.polish(WORK / "TSD.srt", out_path=WORK / "TSD.out.srt",
+                  verbose=False, shift_ms=-500)
+_tsd, _ = srt_utils.parse_srt(srt_utils.read_text(WORK / "TSD.out.srt")[0], strict=True)
+check("a cue whose dialogue reads like a timestamp is still shifted",
+      _tsd[0]["ts"] == "00:00:09,500 --> 00:00:11,500")
+check("...and the timestamp-shaped dialogue line is left verbatim",
+      _tsd[0]["text"] == ["00:00:01,000 --> 00:00:02,000"])
+check("...and the cue after it is shifted too",
+      _tsd[1]["ts"] == "00:00:19,500 --> 00:00:20,500")
+
+# the same trap one step deeper: the quoted timestamp sits after a BLANK line
+# inside the cue text, so a scan that resynchronises on blank lines alone would
+# mistake it for a cue header.
+_TSB = ("1\n00:00:10,000 --> 00:00:12,000\nHola\n\n00:00:01,000 --> 00:00:02,000\n\n"
+        "2\n00:00:20,000 --> 00:00:21,000\nNormal\n")
+(WORK / "TSB.srt").write_text(_TSB, encoding="utf-8")
+srt_polish.polish(WORK / "TSB.srt", out_path=WORK / "TSB.out.srt",
+                  verbose=False, shift_ms=-500)
+_tsb, _ = srt_utils.parse_srt(srt_utils.read_text(WORK / "TSB.out.srt")[0], strict=True)
+check("a timestamp quoted after a blank line inside a cue is not a header",
+      _tsb[0]["text"] == ["Hola", "", "00:00:01,000 --> 00:00:02,000"])
+check("...and that cue was shifted by its real timestamp line",
+      _tsb[0]["ts"] == "00:00:09,500 --> 00:00:11,500")
+
+# an index line + timestamp WITHOUT the blank line before it is genuinely
+# ambiguous SubRip; parse_srt calls it an embedded header and shift must refuse.
+_TSE = ("1\n00:00:10,000 --> 00:00:12,000\n7\n00:00:01,000 --> 00:00:02,000\n\n"
+        "2\n00:00:20,000 --> 00:00:21,000\nNormal\n")
+(WORK / "TSE.srt").write_text(_TSE, encoding="utf-8")
+expect_raises("an ambiguous embedded header makes shift refuse, not guess",
+              lambda: srt_polish.polish(WORK / "TSE.srt", out_path=WORK / "TSE.out.srt",
                                         verbose=False, shift_ms=-500))
 check("...and nothing was written when it refused",
-      not (WORK / "TSD.out.srt").exists())
+      not (WORK / "TSE.out.srt").exists())
 
 # a short millisecond field is SubRip's "left-aligned" form: ,5 == 500 ms
 (WORK / "MS2.srt").write_text("1\n00:00:01,5 --> 00:00:02,25\nCorto\n", encoding="utf-8")
