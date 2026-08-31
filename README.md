@@ -182,10 +182,15 @@ not yours to nudge.
 python scripts/srt_polish.py downloaded.es.srt --shift -500   # 500 ms earlier
 ```
 `--shift` moves every cue by a fixed number of milliseconds and changes nothing else. It
-rewrites **only the timestamp lines** of the decoded source, so cue text, line breaks,
-numbering and any trailing position coordinates come through untouched; before writing it
-checks that every cue moved by exactly that amount and that **no duration changed**. A cue
-that would land before `00:00:00` is clamped there *keeping its duration*.
+rewrites **only each cue's own timestamp line** in the decoded source, so cue text, line
+breaks, numbering and any trailing position coordinates come through untouched; before
+writing it checks that every cue moved by exactly that amount and that **no duration
+changed**. A cue that would land before `00:00:00` is clamped there *keeping its duration*.
+
+Which line is a timestamp is decided by cue *structure* — the line after the index line
+that opens a cue — and not by what a line looks like. A subtitle that quotes a timestamp
+in its dialogue (a film about video editing will) keeps that line verbatim while the cue
+around it still moves.
 
 > Measure before you shift. Match cues to a reference track that is in sync with the video
 > — an embedded track is synced by construction — and take the **median** offset over
